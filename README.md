@@ -1,23 +1,37 @@
-# Aurora Skies
+# Superpowers
 
 A native mod for [Horizon](https://github.com/horizon-rust/horizon), the Rust rewrite of Minecraft: Java Edition
-26.3. At night in the Overworld the sky gets:
+26.3. It adds **six super powers**, each with its own key and its own GPU-drawn effects, a **keybind panel**, and
+**aurora night skies**.
 
-- **Aurora curtains** that ripple and drift: green at the bottom edge, then cyan, fading to violet at the top, with
-  light rays running through them.
-- **Shooting stars** that streak across the sky every few seconds, each with a glowing head and a fading tail.
-- **Twinkling stars** in soft blue and pink, added to the vanilla ones.
+![Super Punch, Laser Eyes, Thunder Strike, Frost Nova, Gravity Well and Hyper Dash](docs/preview-powers.png)
 
-Everything is drawn by a custom GPU shader that runs right after the world is drawn, only on open sky. Hills,
-trees, mobs and clouds stay in front of it. It fades in at dusk and out at dawn, and does nothing by day or in the
-Nether and the End.
+*Top: Super Punch, Laser Eyes (power 5), Thunder Strike. Bottom: Frost Nova, Gravity Well, Hyper Dash. These were
+drawn by the mod's own code on a software GPU, over a stand-in scene of grass and stone pillars, with each power
+fired through the mod's real key handler. In the game they draw over your world.*
 
-| Aurora over the hills | A shooting star overhead |
-| --- | --- |
-| ![Aurora curtains above a hill silhouette](docs/preview-aurora.png) | ![A shooting star crossing the aurora](docs/preview-shooting-star.png) |
+## The powers
 
-*These previews come from the mod's real drawing code running on a software GPU over a stand-in scene (the hills are
-fake). In the game it draws over your own world.*
+| Key | Power | What it does | What you see |
+| --- | --- | --- | --- |
+| **Z** | **Super Punch** | Shatters a cone of blocks 16 long in front of you; part of it flies off as debris. Mobs in it take big damage and are thrown. | Rings of shock flying out from your fist, a white flash, a shockwave racing 34 blocks across the ground, heavy screen shake. |
+| **G** | **Laser Eyes** | Toggles the beams. **Each right-click raises the power, 1 to 5, then back to 1.** They burn through blocks and set mobs on fire, faster and wider at higher power. | Two beams from your eyes with white-hot cores, red, orange, pink, violet, then cyan as the power rises; a flaring, molten spot where they hit. |
+| **V** | **Thunder Strike** | Calls a bolt onto what you look at, then six more around it. | Jagged bolts that flicker and strike again, a blue shockwave, a flash. |
+| **B** | **Frost Nova** | Freezes water to ice and lava to obsidian, and lays snow in a circle of 14 blocks. Mobs are frozen, slowed and hurt. | Frost spreading over the ground, sparkling ice crystals, an icy shock ring, frosted screen edges. |
+| **N** | **Gravity Well** | A black hole for 5 seconds: it pulls in mobs and items and tears blocks out of the ground, then implodes. | A black event horizon, **gravitational lensing** that bends the world behind it, a swirling accretion disk with a photon ring, then a violet shockwave. |
+| **J** | **Hyper Dash** | Launches you forward; mobs in your path are struck and knocked aside. | A sonic boom, a rainbow trail, speed lines, and a wider field of view. |
+| **H** | **Powers panel** | Shows and hides the panel: every power, its key, whether it's ready (with a cooldown bar), and the laser eyes' power. | |
+
+Rebind any key in **Options > Mods > Superpowers**. While the laser eyes are on, right-click raises their power
+instead of using the held item. Keys do nothing while a screen (chat, inventory) is open.
+
+At night in the Overworld the sky also gets **aurora curtains**, **shooting stars** and **twinkling stars**
+([preview](docs/preview-aurora.png), [shooting star](docs/preview-shooting-star.png)).
+
+> [!WARNING]
+> **Super Punch, Laser Eyes, Thunder Strike, Frost Nova and Gravity Well change the world for good.** Try them in a
+> throwaway world or back yours up first. They never break bedrock, the bottom five layers of the world, chests,
+> spawners or command blocks.
 
 ## Requirements
 
@@ -30,19 +44,17 @@ fake). In the game it draws over your own world.*
 ## Install
 
 1. **Close the game.**
-2. In the launcher, open the **Mods** page and choose **Add from GitHub**. Paste this repository's link, or a link to
-   one exact commit (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`). The launcher reads GitHub
-   without signing in, so **the repository must be public**.
+2. In the launcher, open the **Mods** page and choose **Add from GitHub**. Paste a link to one exact commit
+   (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`). The launcher reads GitHub without signing in, so
+   **the repository must be public**.
 3. On the **Native build of {instance}** row, press **Build**, read the warning, and choose
-   **I trust these mods: build**. Native mods aren't sandboxed; this one only draws the sky (read
-   [`api/src/lib.rs`](api/src/lib.rs) and [`api/src/shader.rs`](api/src/shader.rs)). The first build can take 20 to
-   30 minutes; later ones are quicker.
-4. Play. In a world, type `/time set midnight` and look up.
+   **I trust these mods: build**. Native mods aren't sandboxed: everything this one does is in [`api/src`](api/src).
+4. Play. Press **H** for the panel.
 
 Command-line alternative:
 
 ```bash
-horizon-launcher mods add-github https://github.com/pressflowed/minecraft-mod --instance "<instance>" --trust-native-code
+horizon-launcher mods add-github https://github.com/pressflowed/minecraft-mod/commit/<sha> --instance "<instance>" --trust-native-code
 ```
 
 ```bash
@@ -51,18 +63,27 @@ horizon-launcher native-build --instance "<instance>" --trust-native-code
 
 ## If the build fails
 
-The Mods page shows the error, and the launcher keeps the full output in the instance's `native/build.log`. The
-mod's Rust code has been compiled against a stand-in for Horizon's mod API (the same hook signatures and the same
-`wgpu` 30.0.1), and the shader passes wgpu's own validator (`naga`) for Vulkan and Metal. It hasn't yet been built
-inside the real game, so if something doesn't compile, the build log says exactly what.
+The Mods page shows the error, and the launcher keeps the full output in the instance's `native/build.log`. How the
+mod was checked before release:
+
+- Its Rust compiles against a stand-in for Horizon's mod API at the pinned commit (the same hook events, `Host`
+  helpers and `wgpu` 30.0.1), and its unit tests pass.
+- An end-to-end test drives every power through the mod's own hooks: key press, message to the server, then the
+  block edits, commands and mob pushes the server makes.
+- The shaders pass wgpu's validator (`naga`) and translate for Vulkan, Metal and DirectX.
+
+It hasn't been built inside the real game yet, so if something doesn't compile, the build log says exactly what.
 
 ## How it works
 
-- `horizon-mixin.toml`: the bundle. Its `[api]` package is a trait mod; it needs no injections, so the launcher
-  skips horizon-mixins for it.
-- `api/src/lib.rs`: `Hooks::tick` reads the time of day and the dimension from the game. The mod's `RenderHooks`
-  asks for the world's depth (`render_needs`) and draws one full-screen pass in `world_drawn`, blended additively
-  over the picture wherever the depth says "sky".
-- `api/src/shader.rs`: the WGSL. Aurora curtains come from one 2D ribbon field sampled on 28 stacked planes, 220
-  to 520 blocks above the camera, so the ribbons rise as vertical curtains. Shooting stars and extra stars live on
-  the sky folded onto a plane overhead.
+- `horizon-mixin.toml`: the bundle. Its `[api]` package is a trait mod; it needs no injections.
+- [`api/src/client.rs`](api/src/client.rs): keys, cooldowns, the effects being drawn, camera shake, field of view,
+  sounds, and the message each power sends to the server.
+- [`api/src/server.rs`](api/src/server.rs): what the powers do to the world. Messages wait for their dimension's
+  level tick, then become one bulk block edit (`edit_blocks`, only blocks a tool mines, plants, glass and wool),
+  falling-block debris, commands (`damage`, `summon lightning_bolt`, `effect`) and mob pushes.
+- [`api/src/render.rs`](api/src/render.rs) and [`api/src/shader.rs`](api/src/shader.rs): two full-screen passes once
+  the world is drawn. The lens pass bends a copy of the picture round black holes, ripples it along shock waves and
+  frosts it. The light pass adds everything that glows. Both rebuild each pixel's position from the world's depth,
+  so effects light the ground and hide behind hills.
+- [`api/src/hud.rs`](api/src/hud.rs): the panel.
