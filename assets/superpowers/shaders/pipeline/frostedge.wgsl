@@ -31,8 +31,8 @@ fn fbm(start: vec2<f32>) -> f32 {
 
 fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
     let c = input.uv * 2.0 - 1.0;
-    let edge = smoothstep(0.35, 0.95, length(c * vec2<f32>(0.75, 1.0)));
+    let edge = smoothstep(0.6, 1.1, length(c * vec2<f32>(0.75, 1.0)));
     let crystals = fbm(input.uv * vec2<f32>(40.0, 24.0)) * 0.6 + fbm(input.uv * vec2<f32>(140.0, 90.0)) * 0.4;
     let ice = smoothstep(0.5, 0.85, crystals * 0.8 + edge * 0.5) * edge;
-    return vec4<f32>(vec3<f32>(0.8, 0.93, 1.0), ice * input.color.a * 0.75);
+    return vec4<f32>(vec3<f32>(0.8, 0.93, 1.0), ice * input.color.a * 0.5);
 }

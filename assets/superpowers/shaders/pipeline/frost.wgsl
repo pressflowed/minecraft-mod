@@ -40,8 +40,8 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
     let h = hash21(cell);
     let inner = fract(local * 2.0) - 0.5;
     let star = exp(-dot(inner, inner) * 30.0);
-    let sparkle = step(0.85, h) * star * (0.5 + 0.5 * sin(frame.time * (4.0 + h * 9.0) + h * 40.0));
-    let rime = smoothstep(0.35, 0.8, fbm(local * 0.6)) * 0.22;
+    let sparkle = step(0.93, h) * star * (0.5 + 0.5 * sin(frame.time * (4.0 + h * 9.0) + h * 40.0));
+    let rime = smoothstep(0.45, 0.85, fbm(local * 0.6)) * 0.1;
     let edge = smoothstep(0.85, 0.99, r) * 0.6;
     return vec4<f32>(input.color.rgb * (sparkle * 2.5 + rime + edge), 1.0);
 }

@@ -32,8 +32,8 @@ fn fbm(start: vec2<f32>) -> f32 {
 fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
     let c = input.uv;
     let ang = atan2(c.y, c.x);
-    let id = floor(ang * 60.0);
-    let line = step(0.86, hash21(vec2<f32>(id, floor(frame.time * 24.0))));
-    let edge = smoothstep(0.35, 0.95, length(c * vec2<f32>(0.6, 1.0)));
-    return vec4<f32>(vec3<f32>(0.85, 0.95, 1.0) * line * edge * 0.55 * input.color.a, 1.0);
+    let id = floor(ang * 140.0);
+    let line = step(0.93, hash21(vec2<f32>(id, floor(frame.time * 24.0))));
+    let edge = smoothstep(0.55, 1.05, length(c * vec2<f32>(0.6, 1.0)));
+    return vec4<f32>(vec3<f32>(0.85, 0.95, 1.0) * line * edge * 0.3 * input.color.a, 1.0);
 }

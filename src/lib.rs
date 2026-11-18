@@ -28,6 +28,14 @@ pub const ID: &str = "superpowers";
 pub const NAME: &str = "Superpowers";
 pub const VERSION: &str = "0.3.0";
 
+/// For previews outside the game: the client's state and this frame's quads.
+#[doc(hidden)]
+pub mod preview {
+    pub use crate::client::{Beam, Effect, Kind, state};
+    pub use crate::draw::quads_for;
+    pub use crate::powers::bolts;
+}
+
 /// The cast message's sender, made at registration.
 static CAST: OnceLock<ToServer<net::Cast>> = OnceLock::new();
 

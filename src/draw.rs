@@ -128,14 +128,21 @@ impl Batch {
     /// `u0` to `u1` along it, uv.y -1..1 across.
     #[allow(clippy::too_many_arguments)]
     fn strip(&mut self, pipeline: &'static str, b: &Basis, a: V3, bb: V3, width: f64, u0: f32, u1: f32, color: u32) {
+        self.taper(pipeline, b, a, bb, width, width, u0, u1, color);
+    }
+
+    /// A strip whose width runs from `wa` at `a` to `wb` at `bb`.
+    #[allow(clippy::too_many_arguments)]
+    fn taper(&mut self, pipeline: &'static str, b: &Basis, a: V3, bb: V3, wa: f64, wb: f64, u0: f32, u1: f32, color: u32) {
         let along = flight::sub(bb, a);
         let to_eye = flight::sub(b.eye, a);
         let mut side = flight::cross(along, to_eye);
         if flight::length(side) < 1e-9 {
             side = b.right;
         }
-        let side = flight::scale(flight::normalize(side), width);
-        let corners = [flight::add(a, side), flight::sub(a, side), flight::sub(bb, side), flight::add(bb, side)];
+        let side = flight::normalize(side);
+        let (sa, sb) = (flight::scale(side, wa), flight::scale(side, wb));
+        let corners = [flight::add(a, sa), flight::sub(a, sa), flight::sub(bb, sb), flight::add(bb, sb)];
         self.push(pipeline, corners, [[u0, 1.0], [u0, -1.0], [u1, -1.0], [u1, 1.0]], color);
     }
 
@@ -158,10 +165,25 @@ pub fn world(host: &dyn ClientHost, view: &WorldRenderView, draw: &mut dyn World
         return;
     };
     let b = basis(host, view);
+    for (name, quads) in build(&b, Instant::now()).quads {
+        if let Some(&pipeline) = pipelines.get(name) {
+            // (a full budget drops this batch only; the others still draw)
+            let _ = draw.pipeline_quads(pipeline, &quads);
+        }
+    }
+}
+
+/// The quads of this frame, by pipeline, for a camera at `eye` with these axes (for previews).
+#[doc(hidden)]
+pub fn quads_for(eye: V3, right: V3, up: V3, forward: V3, fov: f64) -> Vec<(&'static str, Vec<PipelineQuad>)> {
+    let b = Basis { eye, right, up, forward, fov };
+    build(&b, Instant::now()).quads.into_iter().collect()
+}
+
+fn build(b: &Basis, now: Instant) -> Batch {
     let mut batch = Batch::default();
-    let now = Instant::now();
     let c = client::state();
-    sky(&mut batch, &b, &c.dimension, c.day_time);
+    sky(&mut batch, b, &c.dimension, c.day_time);
     let mut flash = 0.0f32;
     let mut frost_edge = 0.0f32;
     let mut speed = 0.0f32;
@@ -171,21 +193,21 @@ pub fn world(host: &dyn ClientHost, view: &WorldRenderView, draw: &mut dyn World
             continue;
         }
         let t = age / e.duration;
-        effect(&mut batch, &b, e, age, t, &mut flash, &mut frost_edge, &mut speed);
+        effect(&mut batch, b, e, age, t, &mut flash, &mut frost_edge);
     }
     if c.lasers {
         if let Some(beam) = c.beam {
-            eyes(&mut batch, &b, beam, client::linear(crate::hud::beam_color(beam.power)), 0.018 + 0.012 * f64::from(beam.power));
+            eyes(&mut batch, b, beam, client::linear(crate::hud::beam_color(beam.power)), 0.03 + 0.02 * f64::from(beam.power));
         }
     }
     if let Some(beam) = c.omega {
-        eyes(&mut batch, &b, beam, [1.0, 0.2, 0.45], 0.9);
-        batch.facing("orb", &b, beam.to, 9.0, pack([1.0, 0.4, 0.6], 1.0));
-        speed = speed.max(0.6);
-        flash = flash.max(0.08);
+        eyes(&mut batch, b, beam, [1.0, 0.2, 0.45], 0.9);
+        batch.facing("orb", b, beam.to, 7.0, pack([1.0, 0.3, 0.55], 0.7));
+        speed = speed.max(0.3);
+        flash = flash.max(0.05);
     }
     if let Some(f) = &c.flight {
-        contrails(&mut batch, &b, &c.trail);
+        contrails(&mut batch, b, &c.trail);
         if c.controls.boost {
             speed = speed.max((f.speed() as f32 / 3.0).min(1.0));
         }
@@ -198,23 +220,18 @@ pub fn world(host: &dyn ClientHost, view: &WorldRenderView, draw: &mut dyn World
     }
     drop(c);
     if flash > 0.0 {
-        batch.overlay("flash", &b, pack([1.0, 0.96, 0.9], flash), false);
+        batch.overlay("flash", b, pack([1.0, 0.96, 0.9], flash), false);
     }
     if frost_edge > 0.0 {
-        batch.overlay("frostedge", &b, pack([1.0; 3], frost_edge), false);
+        batch.overlay("frostedge", b, pack([1.0; 3], frost_edge), false);
     }
     if speed > 0.0 {
-        batch.overlay("speed", &b, pack([1.0; 3], speed), true);
+        batch.overlay("speed", b, pack([1.0; 3], speed), true);
     }
-    for (name, quads) in batch.quads {
-        if let Some(&pipeline) = pipelines.get(name) {
-            // (a full budget drops this batch only; the others still draw)
-            let _ = draw.pipeline_quads(pipeline, &quads);
-        }
-    }
+    batch
 }
 
-/// The night sky over the Overworld: aurora layers, shooting stars and twinkling stars.
+/// The night sky over the Overworld: aurora curtains, shooting stars and twinkling stars.
 fn sky(batch: &mut Batch, b: &Basis, dimension: &str, day_time: i64) {
     if !dimension.ends_with("overworld") {
         return;
@@ -223,18 +240,29 @@ fn sky(batch: &mut Batch, b: &Basis, dimension: &str, day_time: i64) {
     if night <= 0.001 {
         return;
     }
-    let half = 4000.0;
-    let layers = 16;
-    for i in 0..layers {
-        let f = (f64::from(i) + 0.5) / f64::from(layers);
-        let y = b.eye[1] + 220.0 + f * 300.0;
-        let (x0, z0, x1, z1) = (b.eye[0] - half, b.eye[2] - half, b.eye[0] + half, b.eye[2] + half);
-        // uv is the world's x and z in kilometres (wrapped to keep their detail)
-        let k = |v: f64| ((v.rem_euclid(65_536.0)) / 1000.0) as f32;
-        let (u0, v0) = (k(x0), k(z0));
-        let (u1, v1) = (u0 + (2.0 * half / 1000.0) as f32, v0 + (2.0 * half / 1000.0) as f32);
-        let corners = [[x0, y, z1], [x0, y, z0], [x1, y, z0], [x1, y, z1]];
-        batch.push("aurora", corners, [[u0, v1], [u0, v0], [u1, v0], [u1, v1]], pack([night; 3], f as f32));
+    // Curtains far off in the sky, as the real ones are (so they keep their place round the
+    // player): each a strip of tall quads following a slowly folding line.
+    let t = secs();
+    for (k, (offset, bright)) in [(-520.0, 1.0), (-950.0, 0.85), (380.0, 0.7), (-180.0, 0.6)].into_iter().enumerate() {
+        let seed = k as f64 * 17.3;
+        let segments = 48;
+        let span = 4200.0;
+        let base_y = b.eye[1] + 300.0;
+        let top = 260.0 + 60.0 * (seed * 0.7).sin();
+        let path = |i: usize| {
+            let f = i as f64 / segments as f64;
+            let x = -span / 2.0 + f * span;
+            let fold = 260.0 * smooth_noise(f * 4.0 + t * 0.01, seed) + 90.0 * smooth_noise(f * 13.0 - t * 0.02, seed + 3.0);
+            [b.eye[0] + x, base_y, b.eye[2] + offset + fold - 175.0]
+        };
+        for i in 0..segments {
+            let (a, c) = (path(i), path(i + 1));
+            let ends = ((i as f32 + 0.5) / segments as f32 * std::f32::consts::PI).sin();
+            let u0 = (i as f64 * span / segments as f64 / 100.0) as f32 + seed as f32;
+            let u1 = ((i + 1) as f64 * span / segments as f64 / 100.0) as f32 + seed as f32;
+            let corners = [flight::add(a, [0.0, top, 0.0]), a, c, flight::add(c, [0.0, top, 0.0])];
+            batch.push("aurora", corners, [[u0, 1.0], [u0, 0.0], [u1, 0.0], [u1, 1.0]], pack([night; 3], bright * ends));
+        }
     }
     let y = b.eye[1] + 600.0;
     let h = 6000.0;
@@ -258,7 +286,7 @@ fn ease(t: f32) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn effect(batch: &mut Batch, b: &Basis, e: &Effect, age: f32, t: f32, flash: &mut f32, frost_edge: &mut f32, speed: &mut f32) {
+fn effect(batch: &mut Batch, b: &Basis, e: &Effect, age: f32, t: f32, flash: &mut f32, frost_edge: &mut f32) {
     match e.kind {
         Kind::Ring => {
             let r = (e.size * ease(t)).max(0.3);
@@ -329,10 +357,9 @@ fn effect(batch: &mut Batch, b: &Basis, e: &Effect, age: f32, t: f32, flash: &mu
                 return;
             }
             let tilt = [f64::from(e.seed).sin() * 0.35, 1.0, f64::from(e.seed).cos() * 0.35];
-            batch.flat("disk", e.at, tilt, rs * 7.0, pack([1.0; 3], grow));
+            batch.flat("disk", e.at, tilt, rs * 7.0, pack([1.0; 3], grow * 0.8));
             batch.facing("shadow", b, e.at, rs / 0.55, pack([1.0; 3], grow));
             batch.facing("orb", b, e.at, rs * 5.0, pack([0.5, 0.25, 0.9], 0.35 * grow));
-            *speed = speed.max(0.25 * grow * (e.size as f32 / 7.0).min(1.0));
         }
         Kind::Trail => {
             let w = 0.6 * f64::from(1.0 - t);
@@ -365,12 +392,15 @@ fn eyes(batch: &mut Batch, b: &Basis, beam: client::Beam, color: [f32; 3], width
         let from = flight::add(base, flight::scale(b.right, 0.09 * side));
         // the first stretch in front of the eyes is left out: so close, it would fill the view
         let dir = flight::normalize(flight::sub(beam.to, from));
-        let start = flight::add(from, flight::scale(dir, if omega { 2.0 } else { 0.6 }));
-        batch.strip("beam", b, start, beam.to, width, 0.0, length, pack(color, 1.0));
+        let start = flight::add(from, flight::scale(dir, if omega { 1.2 } else { 0.35 }));
+        // thin where it leaves the eyes, so close up it stays a line rather than a wall
+        let near = flight::length(flight::sub(start, b.eye));
+        let wa = width * (near / if omega { 3.0 } else { 6.0 }).min(1.0);
+        batch.taper("beam", b, start, beam.to, wa, width, 0.0, length, pack(color, 1.0));
     }
     if beam.hit {
-        let size = if omega { 6.0 } else { 0.25 + 0.12 * f64::from(beam.power) };
-        batch.facing("orb", b, beam.to, size, pack([1.0, 0.55, 0.2], 1.0));
+        let size = if omega { 4.0 } else { 0.25 + 0.12 * f64::from(beam.power) };
+        batch.facing("orb", b, beam.to, size, pack(if omega { [1.0, 0.35, 0.6] } else { [1.0, 0.55, 0.2] }, 1.0));
     }
 }
 
@@ -385,6 +415,12 @@ fn contrails(batch: &mut Batch, b: &Basis, trail: &std::collections::VecDeque<(V
             batch.strip("beam", b, pick(trail[i - 1]), pick(trail[i]), 0.06 * f64::from(fade) + 0.02, 0.0, 1.0, color);
         }
     }
+}
+
+/// Seconds since the mod first drew, for slowly moving things.
+fn secs() -> f64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
 fn hash(x: f32) -> f32 {

@@ -1,89 +1,101 @@
 # Superpowers
 
 A native mod for [Horizon](https://github.com/horizon-rust/horizon), the Rust rewrite of Minecraft: Java Edition
-26.3. It adds **six super powers**, each with its own key and its own GPU-drawn effects, a **keybind panel**, and
-**aurora night skies**.
+26.3. It adds twelve super powers, five of them mega powers, plus elytra-style **Superflight** with barrel rolls and
+loops. On top of that there's the **CATACLYSM**, a crater 40 chunks across, along with a keybind panel and aurora night
+skies. Built for **Horizon Nightly 2026-11-18**.
 
-![Super Punch, Laser Eyes, Thunder Strike, Frost Nova, Gravity Well and Hyper Dash](docs/preview-powers.png)
+![Every power, drawn by the mod's own shaders](docs/preview-powers.png)
 
-*Top: Super Punch, Laser Eyes (power 5), Thunder Strike. Bottom: Frost Nova, Gravity Well, Hyper Dash. These were
-drawn by the mod's own code on a software GPU, over a stand-in scene of grass and stone pillars, with each power
-fired through the mod's real key handler. In the game they draw over your world.*
+*Each picture is the mod's own quads and shaders, drawn the way the game draws them, on a software GPU over a
+stand-in scene (the grass and stone pillars are fake). In the game they draw over your world.*
 
-## The powers
+## Powers
 
-| Key | Power | What it does | What you see |
-| --- | --- | --- | --- |
-| **Z** | **Super Punch** | Shatters a cone of blocks 16 long in front of you; part of it flies off as debris. Mobs in it take big damage and are thrown. | Rings of shock flying out from your fist, a white flash, a shockwave racing 34 blocks across the ground, heavy screen shake. |
-| **G** | **Laser Eyes** | Toggles the beams. **Each right-click raises the power, 1 to 5, then back to 1.** They burn through blocks and set mobs on fire, faster and wider at higher power. | Two beams from your eyes with white-hot cores, red, orange, pink, violet, then cyan as the power rises; a flaring, molten spot where they hit. |
-| **V** | **Thunder Strike** | Calls a bolt onto what you look at, then six more around it. | Jagged bolts that flicker and strike again, a blue shockwave, a flash. |
-| **B** | **Frost Nova** | Freezes water to ice and lava to obsidian, and lays snow in a circle of 14 blocks. Mobs are frozen, slowed and hurt. | Frost spreading over the ground, sparkling ice crystals, an icy shock ring, frosted screen edges. |
-| **N** | **Gravity Well** | A black hole for 5 seconds: it pulls in mobs and items and tears blocks out of the ground, then implodes. | A black event horizon, **gravitational lensing** that bends the world behind it, a swirling accretion disk with a photon ring, then a violet shockwave. |
-| **J** | **Hyper Dash** | Launches you forward; mobs in your path are struck and knocked aside. | A sonic boom, a rainbow trail, speed lines, and a wider field of view. |
-| **H** | **Powers panel** | Shows and hides the panel: every power, its key, whether it's ready (with a cooldown bar), and the laser eyes' power. | |
+All keys can be rebound in Horizon's Controls, under **Superpowers**. **H** shows and hides the panel, which lists
+every key, cooldown and the laser power.
 
-Rebind any key in **Options > Mods > Superpowers**. While the laser eyes are on, right-click raises their power
-instead of using the held item. Keys do nothing while a screen (chat, inventory) is open.
+| Key | Power | What it does |
+| --- | --- | --- |
+| **Z** | Super Punch | Shatters a cone of blocks 16 long. Debris flies, mobs are hurt and thrown, and a shockwave races across the ground. |
+| **G** | Laser Eyes | Toggles the beams. **Each right-click raises the power from 1 to 5**, then wraps back to 1. They burn through blocks and set mobs alight. |
+| **V** | Thunder Strike | Seven lightning bolts strike around your target. |
+| **B** | Frost Nova | Water freezes, lava turns to obsidian and snow settles within 14 blocks. Mobs are frozen and slowed. |
+| **N** | Gravity Well | A black hole pulls in mobs, items and torn-up blocks for 5 seconds, then implodes. |
+| **J** | Hyper Dash | Launches you forward, with a rainbow trail and a sonic boom. |
+| **R** | **Superflight** | Fly freely, steering with the mouse, as with an elytra but with no gliding (see below). |
 
-At night in the Overworld the sky also gets **aurora curtains**, **shooting stars** and **twinkling stars**
-([preview](docs/preview-aurora.png), [shooting star](docs/preview-shooting-star.png)).
+### Mega powers (×5)
+
+| Key | Power | What it does |
+| --- | --- | --- |
+| **Y** | Titan Fist | Super Punch ×5: a cone 80 blocks long and a shockwave 170 blocks out. |
+| **U** | Omega Beam | Laser Eyes ×5: a giant beam that carves a tunnel 200 blocks long for 4 seconds, following your aim. |
+| **I** | Wrath of the Gods | Thunder ×5: 36 bolts across a circle 92 blocks wide, each leaving a crater. |
+| **O** | Absolute Zero | Frost ×5: freezes 70 blocks round you, raises ice spikes and adds a blizzard of frost. |
+| **K** | Singularity | Gravity Well ×5: a black hole that pulls from 120 blocks away, eats a ball of land 48 blocks across, then explodes. |
+| **M** (hold 2 s) | **CATACLYSM** | Hold to charge, aim where you look, and let it build. It blasts a crater **640 blocks (40 chunks) across** and up to 90 deep, wiping out everything in it. Let go early to call it off. |
+
+## Superflight
+
+| Control | Does |
+| --- | --- |
+| Mouse | Steers the nose in your own frame: upside down, pulling up still pulls up. |
+| W / S | Thrust and airbrake. |
+| Sprint + W | Boost (about 60 blocks a second). |
+| A / D | Roll. |
+| Double-tap A or D | A full barrel roll that way. |
+| **X** | A loop. |
+| Space / Sneak | Climb and sink. |
+| R | Land (stop flying). |
+
+You take no fall damage while flying, nor for ten seconds after landing. Contrails stream from your wingtips, and the
+view widens with speed. The HUD shows your speed, height and roll on a horizon line. The camera rolls all the way round:
+the mod carries one small patch to the game (a `[[native.mixin]]` in `horizon-mod.toml`), because the game otherwise
+limits a mod's camera roll to 10 degrees.
 
 > [!WARNING]
-> **Super Punch, Laser Eyes, Thunder Strike, Frost Nova and Gravity Well change the world for good.** Try them in a
-> throwaway world or back yours up first. They never break bedrock, the bottom five layers of the world, chests,
-> spawners or command blocks.
-
-## Requirements
-
-- The Horizon launcher (0.2.37 or newer) and an instance set up from your own Minecraft: Java Edition 26.3.
-- This mod is pinned to Horizon commit `e57b1d34bb0dcf6bf081c19fe6d2e7f69b60cdf4`, the same one Orbital Laser
-  pins, so the two build into one game.
-- On Linux: a C compiler, `pkg-config`, and the ALSA and libudev development files (the launcher tells you the
-  command if any are missing). Windows needs nothing extra.
+> **The powers change the world for good.** Use a throwaway world or back yours up. They never break bedrock or the
+> bottom five layers of the world. The small powers only break blocks a tool can mine (plus plants, glass and wool);
+> the Cataclysm wipes out everything in its crater. It only changes chunks that are loaded, so beyond your render
+> distance the land stays as it was.
 
 ## Install
 
-1. **Close the game.**
-2. In the launcher, open the **Mods** page and choose **Add from GitHub**. Paste a link to one exact commit
-   (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`). The launcher reads GitHub without signing in, so
-   **the repository must be public**.
-3. On the **Native build of {instance}** row, press **Build**, read the warning, and choose
-   **I trust these mods: build**. Native mods aren't sandboxed: everything this one does is in [`api/src`](api/src).
-4. Play. Press **H** for the panel.
+1. **Use Horizon Nightly 2026-11-18.** Native mods are built against the exact game build they pin, and 11-18 is the
+   build this mod is made for. Install it in the launcher and move your instance onto it (**Rebuild on Horizon
+   Nightly**), or make a new instance on it.
+2. If the instance still has an **older Superpowers** (the one with `horizon-mixin.toml`), remove it. Turn off mods
+   pinned to other builds, such as the Orbital Laser version pinned to Horizon `e57b1d3`, or keep them in a different
+   instance.
+3. On the **Mods** page, choose **Add from GitHub** and paste a commit link
+   (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`). The repository must be public.
+4. Press **Build**, then **I trust these mods: build**. Native mods run unsandboxed; all of this one's code is in
+   [`src/`](src).
+5. Play. Press **H** for the panel. Type `/time set midnight` to see the aurora.
 
-Command-line alternative:
+## How it was checked
 
-```bash
-horizon-launcher mods add-github https://github.com/pressflowed/minecraft-mod/commit/<sha> --instance "<instance>" --trust-native-code
-```
+- The code compiles against the real mod SDK of Nightly 2026-11-18, and its unit tests pass. They cover the flight
+  physics (barrel rolls and loops come back level, steering works in the flyer's frame), the crater geometry, the
+  cast message and the key layout.
+- All 13 shaders are wrapped in the game's own prelude and entry points. They pass wgpu's validator and translate for
+  Vulkan, Metal and DirectX.
+- The previews above were drawn from the mod's real quads with the game's own blending and depth rules.
+- It hasn't run inside the game yet. If the build fails, the Mods page and `native/build.log` say why. If something
+  looks or feels wrong in play (the direction of a roll, how strong an effect is), it's quick to tune.
 
-```bash
-horizon-launcher native-build --instance "<instance>" --trust-native-code
-```
+## Layout
 
-## If the build fails
-
-The Mods page shows the error, and the launcher keeps the full output in the instance's `native/build.log`. How the
-mod was checked before release:
-
-- Its Rust compiles against a stand-in for Horizon's mod API at the pinned commit (the same hook events, `Host`
-  helpers and `wgpu` 30.0.1), and its unit tests pass.
-- An end-to-end test drives every power through the mod's own hooks: key press, message to the server, then the
-  block edits, commands and mob pushes the server makes.
-- The shaders pass wgpu's validator (`naga`) and translate for Vulkan, Metal and DirectX.
-
-It hasn't been built inside the real game yet, so if something doesn't compile, the build log says exactly what.
-
-## How it works
-
-- `horizon-mixin.toml`: the bundle. Its `[api]` package is a trait mod; it needs no injections.
-- [`api/src/client.rs`](api/src/client.rs): keys, cooldowns, the effects being drawn, camera shake, field of view,
-  sounds, and the message each power sends to the server.
-- [`api/src/server.rs`](api/src/server.rs): what the powers do to the world. Messages wait for their dimension's
-  level tick, then become one bulk block edit (`edit_blocks`, only blocks a tool mines, plants, glass and wool),
-  falling-block debris, commands (`damage`, `summon lightning_bolt`, `effect`) and mob pushes.
-- [`api/src/render.rs`](api/src/render.rs) and [`api/src/shader.rs`](api/src/shader.rs): two full-screen passes once
-  the world is drawn. The lens pass bends a copy of the picture round black holes, ripples it along shock waves and
-  frosts it. The light pass adds everything that glows. Both rebuild each pixel's position from the world's depth,
-  so effects light the ground and hide behind hills.
-- [`api/src/hud.rs`](api/src/hud.rs): the panel.
+| File | What |
+| --- | --- |
+| `horizon-mod.toml` | The manifest: the pinned build, and the camera-roll patch. |
+| `src/lib.rs` | The hooks. |
+| `src/powers.rs` | Every power's key, name and cooldown. |
+| `src/client.rs` | Keys, cooldowns, effects, Superflight, camera feel and sounds. |
+| `src/flight.rs` | The flight physics. |
+| `src/server.rs` | What each power does to the world, in each level's tick. |
+| `src/draw.rs` | Every effect as shader quads. |
+| `src/hud.rs` | The panel and the flight instruments. |
+| `assets/superpowers/shaders/pipeline/*.wgsl` | The shaders. |
+| `src/mixins/unbounded_shake.rs` | The camera-roll patch. |

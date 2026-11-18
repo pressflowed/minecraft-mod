@@ -30,25 +30,23 @@ fn fbm(start: vec2<f32>) -> f32 {
     return sum;
 }
 
-fn ribbons(xz: vec2<f32>, t: f32) -> f32 {
-    let p = (xz + vec2<f32>(t * 1.5, t * 0.6)) * 0.0021;
-    let bend = fbm(p * vec2<f32>(1.0, 0.6) + vec2<f32>(t * 0.010, -t * 0.006)) * 5.0;
-    let v = p.y * 0.8 + bend;
-    let tri = 1.0 - abs(fract(v) * 2.0 - 1.0);
-    let sheet = pow(tri, 9.0);
-    let lit = smoothstep(0.45, 0.75, hash21(vec2<f32>(floor(v), 3.7)));
-    let rays = 0.45 + 0.55 * noise(vec2<f32>(xz.x * 0.045 + t * 0.35, v * 3.0));
-    let strength = smoothstep(0.2, 0.7, noise(p * 0.7 + vec2<f32>(-t * 0.004, t * 0.003)));
-    return sheet * lit * rays * strength;
-}
-
+// One curtain of the aurora, hanging in the sky: a strip of quads along its fold, uv.x along it
+// in hundreds of blocks, uv.y from its hem (0) to its top (1). alpha: how bright this curtain
+// is; color: how dark the night is.
 fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
-    let f = input.color.a;
+    let x = input.uv.x;
+    let y = clamp(input.uv.y, 0.0, 1.0);
+    let t = frame.time;
+    // fine rays running up the curtain, drifting along it
+    let rays = 0.35 + 0.65 * noise(vec2<f32>(x * 9.0 + t * 0.6, t * 0.15)) * noise(vec2<f32>(x * 23.0 - t * 0.9, 4.0));
+    // brighter and dimmer stretches that slide along
+    let stretch = smoothstep(0.15, 0.75, fbm(vec2<f32>(x * 0.6 - t * 0.05, t * 0.02)));
+    // a sharp bright hem, fading upward
+    let hem = smoothstep(0.0, 0.04, y) * pow(1.0 - y, 1.4);
+    let tint = mix(mix(vec3<f32>(0.10, 1.00, 0.45), vec3<f32>(0.05, 0.65, 1.00), smoothstep(0.05, 0.5, y)),
+                   vec3<f32>(0.75, 0.15, 1.00), smoothstep(0.5, 1.0, y));
     let dist = length(input.position);
     let up = input.position.y / max(dist, 1.0);
-    let s = ribbons(input.uv * 1000.0, frame.time);
-    let tint = mix(mix(vec3<f32>(0.10, 1.00, 0.45), vec3<f32>(0.05, 0.65, 1.00), smoothstep(0.0, 0.45, f)),
-                   vec3<f32>(0.75, 0.15, 1.00), smoothstep(0.45, 1.0, f));
-    let fade = pow(1.0 - f, 1.6) * exp(-dist * 0.00045) * smoothstep(0.02, 0.22, up);
-    return vec4<f32>(tint * s * fade * input.color.rgb * 0.8, 1.0);
+    let fade = exp(-dist * 0.00035) * smoothstep(0.0, 0.12, up);
+    return vec4<f32>(tint * rays * stretch * hem * fade * input.color.rgb * input.color.a * 1.4, 1.0);
 }

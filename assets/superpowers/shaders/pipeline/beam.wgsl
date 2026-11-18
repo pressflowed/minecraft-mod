@@ -35,6 +35,6 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
     let halo = exp(-abs(y) * 3.0) * 0.55;
     let pulse = 0.72 + 0.28 * sin(input.uv.x * 1.7 - frame.time * 42.0);
     let flicker = 0.85 + 0.15 * noise(vec2<f32>(frame.time * 55.0, input.uv.x * 0.3));
-    let col = input.color.rgb * (core * 2.2 + halo * pulse) + vec3<f32>(1.0) * core * 2.4;
+    let col = input.color.rgb * (core * 2.6 + halo * pulse * 1.4) + vec3<f32>(1.0) * core * 1.1;
     return vec4<f32>(col * flicker * input.color.a, 1.0);
 }
