@@ -1,0 +1,14 @@
+# Aurora Skies: a native trait mod for Horizon (Minecraft Java 26.3 in Rust).
+# Night skies get glowing aurora curtains, shooting stars and twinkling coloured stars.
+# Install it from the launcher's Mods page with "Add from GitHub", or build this folder with
+# `horizon-launcher native-build <this folder> --instance <instance> --trust-native-code`.
+[mod]
+id = "aurora_skies"
+version = "0.1.0"
+
+# The same Horizon commit Orbital Laser pins, so both mods build into one game.
+[compatibility]
+horizon_revision = "e57b1d34bb0dcf6bf081c19fe6d2e7f69b60cdf4"
+
+[api]
+path = "api"
