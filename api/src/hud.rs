@@ -14,7 +14,7 @@ pub fn draw(host: &mut dyn Host, batch: &mut HudBatch, corners: &mut Corners) {
         let state = client::state();
         (state.panel, state.lasers, state.laser_power, state.ready)
     };
-    let corner = if host.corner_shown(Corner::TopLeft) { Corner::TopLeft } else { Corner::BottomLeft };
+    let corner = Corner::TopLeft;
     let toggle = client::key_label(host, PANEL.0, PANEL.2);
     if !panel {
         let hint = format!("[{toggle}] Superpowers");
