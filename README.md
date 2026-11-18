@@ -3,12 +3,14 @@
 A native mod for [Horizon](https://github.com/horizon-rust/horizon), the Rust rewrite of Minecraft: Java Edition
 26.3. It adds twelve super powers, five of them mega powers, plus elytra-style **Superflight** with barrel rolls and
 loops. On top of that there's the **CATACLYSM**, a crater 40 chunks across, along with a keybind panel and aurora night
-skies. Built for **Horizon Nightly 2026-11-18**.
+skies. Built on Horizon commit `e57b1d3`, the build Orbital Laser pins, so the two run in one game, and for
+launchers that read native mods as `horizon-mixin.toml` bundles.
 
 ![Every power, drawn by the mod's own shaders](docs/preview-powers.png)
 
-*Each picture is the mod's own quads and shaders, drawn the way the game draws them, on a software GPU over a
-stand-in scene (the grass and stone pillars are fake). In the game they draw over your world.*
+*Drawn on a software GPU over a stand-in scene (the grass and stone pillars are fake) by this mod's effects as
+they were first built for the newer mod API. This build draws the same effects with its own GPU pass, so the
+look is close but not identical. In the game they draw over your world.*
 
 ## Powers
 
@@ -40,19 +42,18 @@ every key, cooldown and the laser power.
 
 | Control | Does |
 | --- | --- |
-| Mouse | Steers the nose in your own frame: upside down, pulling up still pulls up. |
+| Mouse | Steers: you fly where you look. |
 | W / S | Thrust and airbrake. |
-| Sprint + W | Boost (about 60 blocks a second). |
-| A / D | Roll. |
-| Double-tap A or D | A full barrel roll that way. |
-| **X** | A loop. |
+| Sprint (Ctrl) + W | Boost (about 60 blocks a second). |
+| A / D | Bank and slide sideways; turning banks you too. |
+| Double-tap A or D | A full barrel roll that way, corkscrewing round your line of flight. |
+| **X** | A loop: the camera and your flight go up, over and round. |
 | Space / Sneak | Climb and sink. |
 | R | Land (stop flying). |
 
-You take no fall damage while flying, nor for ten seconds after landing. Contrails stream from your wingtips, and the
-view widens with speed. The HUD shows your speed, height and roll on a horizon line. The camera rolls all the way round:
-the mod carries one small patch to the game (a `[[native.mixin]]` in `horizon-mod.toml`), because the game otherwise
-limits a mod's camera roll to 10 degrees.
+You take no fall damage while flying, nor for ten seconds after. The view widens with speed, and speed lines stream
+past when you boost. The camera rolls and loops all the way round: the mod carries one small patch to the game (the
+`[[injection]]` in `horizon-mixin.toml`), because the game otherwise limits a mod's camera turn to 10 degrees.
 
 > [!WARNING]
 > **The powers change the world for good.** Use a throwaway world or back yours up. They never break bedrock or the
@@ -62,40 +63,30 @@ limits a mod's camera roll to 10 degrees.
 
 ## Install
 
-1. **Use Horizon Nightly 2026-11-18.** Native mods are built against the exact game build they pin, and 11-18 is the
-   build this mod is made for. Install it in the launcher and move your instance onto it (**Rebuild on Horizon
-   Nightly**), or make a new instance on it.
-2. If the instance still has an **older Superpowers** (the one with `horizon-mixin.toml`), remove it. Turn off mods
-   pinned to other builds, such as the Orbital Laser version pinned to Horizon `e57b1d3`, or keep them in a different
-   instance.
-3. On the **Mods** page, choose **Add from GitHub** and paste a commit link
-   (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`). The repository must be public.
-4. Press **Build**, then **I trust these mods: build**. Native mods run unsandboxed; all of this one's code is in
-   [`src/`](src).
-5. Play. Press **H** for the panel. Type `/time set midnight` to see the aurora.
+1. In the launcher's **Mods** page, remove any older **superpowers**.
+2. Choose **Add from GitHub** and paste a commit link (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`).
+   The repository must be public.
+3. Press **Build**, then **I trust these mods: build**. Native mods run unsandboxed; all of this one's code is in
+   [`api/src`](api/src).
+4. Play. Press **H** for the panel. Type `/time set midnight` to see the aurora.
 
 ## How it was checked
 
-- The code compiles against the real mod SDK of Nightly 2026-11-18, and its unit tests pass. They cover the flight
-  physics (barrel rolls and loops come back level, steering works in the flyer's frame), the crater geometry, the
-  cast message and the key layout.
-- All 13 shaders are wrapped in the game's own prelude and entry points. They pass wgpu's validator and translate for
-  Vulkan, Metal and DirectX.
-- The previews above were drawn from the mod's real quads with the game's own blending and depth rules.
+- The code type-checks against Horizon's own source at commit `e57b1d3`, the build it is made for, and its
+  unit tests pass (the flight physics, the bolt scatter, the cast message, the key layout).
+- The shaders pass wgpu's validator and translate for Vulkan, Metal and DirectX.
 - It hasn't run inside the game yet. If the build fails, the Mods page and `native/build.log` say why. If something
-  looks or feels wrong in play (the direction of a roll, how strong an effect is), it's quick to tune.
+  looks or feels wrong in play, it's quick to tune.
 
 ## Layout
 
 | File | What |
 | --- | --- |
-| `horizon-mod.toml` | The manifest: the pinned build, and the camera-roll patch. |
-| `src/lib.rs` | The hooks. |
-| `src/powers.rs` | Every power's key, name and cooldown. |
-| `src/client.rs` | Keys, cooldowns, effects, Superflight, camera feel and sounds. |
-| `src/flight.rs` | The flight physics. |
-| `src/server.rs` | What each power does to the world, in each level's tick. |
-| `src/draw.rs` | Every effect as shader quads. |
-| `src/hud.rs` | The panel and the flight instruments. |
-| `assets/superpowers/shaders/pipeline/*.wgsl` | The shaders. |
-| `src/mixins/unbounded_shake.rs` | The camera-roll patch. |
+| `horizon-mixin.toml` | The bundle: the pinned build, the `[api]` crate, and the camera patch. |
+| `mixins/unbounded_shake.rs` | The camera patch. |
+| `api/src/lib.rs` | The hooks. |
+| `api/src/client.rs` | Every power's key and cooldown; effects, Superflight, camera feel and sounds. |
+| `api/src/flight.rs` | Vector maths for flight. |
+| `api/src/server.rs` | What each power does to the world, in each level's tick. |
+| `api/src/render.rs`, `api/src/shader.rs` | The GPU passes and their WGSL. |
+| `api/src/hud.rs` | The panel, the flight read-out and the Cataclysm's charge. |
