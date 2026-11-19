@@ -926,31 +926,21 @@ fn pose(j: &Jets) -> Option<(V, Q)> {
     Some((jet.prev.0.lerp(jet.sim.pos, t), jet.prev.1.slerp(jet.sim.rot, t)))
 }
 
-/// Turns the camera with the jet: in the cockpit it leans with the jet's roll (all the way,
-/// fixed to the cockpit, in direct mode); a hard pull or a stall shakes it.
+/// The roll that turns a camera looking along `fwd` (unrolled) onto the jet's axes.
+fn cockpit_roll(left: V, up: V, fwd: V) -> f32 {
+    let r = fwd.cross(V::UP).norm();
+    let r = if r.len() < 0.5 { v(1.0, 0.0, 0.0) } else { r };
+    let u = r.cross(fwd);
+    left.dot(u).atan2(up.dot(u)).to_degrees() as f32
+}
+
+/// A hard pull, a stall or a fast run on the ground shakes the camera.
 pub fn shake(shake: &mut NativeShake) {
     let j = state();
     let Some(jet) = j.jet.as_ref() else {
         return;
     };
-    let Some((_, rot)) = pose(&j) else {
-        return;
-    };
-    let third = third_person(&j);
     let sim = &jet.sim;
-    let (left, up, fwd) = rot.basis();
-    if !third {
-        if jet.mode == Mode::Direct {
-            // the view is the cockpit's: rotate the player's view onto the jet's
-            let (pitch, yaw, roll) = view_onto(j.look, -left, up, fwd);
-            shake.pitch += pitch;
-            shake.yaw += yaw;
-            shake.roll += roll;
-        } else {
-            let roll = left.y.atan2(up.y).to_degrees();
-            shake.roll += (roll * 0.4) as f32;
-        }
-    }
     let buffet = (sim.g.abs() - 5.0).max(0.0) * 0.12 + if sim.stalled { 0.6 } else { 0.0 } + if sim.on_ground { (sim.airspeed() / 80.0).min(0.4) } else { 0.0 };
     if buffet > 0.0 {
         let t = Instant::now().elapsed().as_secs_f32() + j.ticks as f32 * 0.05;
@@ -959,9 +949,29 @@ pub fn shake(shake: &mut NativeShake) {
     }
 }
 
+/// The camera's roll in the cockpit this frame (degrees, right wing down positive): in direct
+/// mode the view is fixed to the cockpit and leans all the way with the jet; with mouse aim it
+/// leans part of the way. None outside a jet; nothing behind it.
+pub fn roll(partial: f32) -> Option<f32> {
+    let mut j = state();
+    j.partial = partial;
+    let jet = j.jet.as_ref()?;
+    if third_person(&j) {
+        return Some(0.0);
+    }
+    let (_, rot) = pose(&j)?;
+    let (left, up, fwd) = rot.basis();
+    if jet.mode == Mode::Direct {
+        Some(cockpit_roll(left, up, fwd))
+    } else {
+        Some((left.y.atan2(up.y).to_degrees() * 0.4) as f32)
+    }
+}
+
 /// The shake angles (pitch, yaw, roll, degrees) that turn a camera looking along `look` (level)
 /// into one whose right, up and forward axes are these. The game builds the view as
 /// roll(z) * pitch(x) * yaw(y) * the look's own view.
+#[allow(dead_code)]
 pub fn view_onto(look: V, right: V, up: V, fwd: V) -> (f32, f32, f32) {
     let f = look.norm();
     let r = f.cross(V::UP).norm();
@@ -1018,6 +1028,12 @@ pub fn camera_pose(partial: f32, third: bool, pose: &mut ([f64; 3], f32, f32)) -
         return false;
     };
     let eye = at + rot.rotate(jet.sim.spec().eye);
+    if !third && jet.mode == Mode::Direct {
+        // the view is fixed to the cockpit: it looks along the nose (the roll is `roll`)
+        let (_, _, fwd) = rot.basis();
+        pose.1 = (-fwd.x).atan2(fwd.z).to_degrees() as f32;
+        pose.2 = (-fwd.y).clamp(-1.0, 1.0).asin().to_degrees() as f32;
+    }
     let look = vec(flight::look(f64::from(pose.1), f64::from(pose.2)));
     let camera = if third { eye - look * f64::from(j.chase) + V::UP * 0.6 } else { eye };
     pose.0 = camera.arr();
@@ -1311,6 +1327,22 @@ mod tests {
         assert!((rows[0] - left * -1.0).len() < 1e-4, "{:?}", rows);
         assert!((rows[1] - up).len() < 1e-4);
         assert!((rows[2] - fwd * -1.0).len() < 1e-4);
+    }
+
+    #[test]
+    fn the_direct_cockpit_pose_is_the_jets() {
+        // yaw and pitch along the nose, then the roll: the view's axes are the jet's
+        for (axis, angle, bank) in [(v(0.2, 1.0, 0.4), 0.9, 0.7), (v(1.0, 0.3, 0.0), -0.6, 2.4), (v(0.0, 1.0, 0.0), 2.0, -1.2)] {
+            let rot = Q::axis_angle(axis, angle).mul(Q::axis_angle(v(0.0, 0.0, 1.0), bank));
+            let (left, up, fwd) = rot.basis();
+            let yaw = (-fwd.x).atan2(fwd.z).to_degrees();
+            let pitch = (-fwd.y).asin().to_degrees();
+            let look = vec(flight::look(yaw, pitch));
+            let rows = compose(look, (0.0, 0.0, cockpit_roll(left, up, fwd)));
+            assert!((rows[0] - left * -1.0).len() < 1e-4, "{rows:?}");
+            assert!((rows[1] - up).len() < 1e-4);
+            assert!((rows[2] - fwd * -1.0).len() < 1e-4);
+        }
     }
 
     #[test]

@@ -145,10 +145,10 @@ the seat, the server puts it back.
 Flight has momentum: your path swings round to where you look instead of snapping to it, banks into the turn it
 makes, and speeds up and slows down smoothly. Rolls and loops ease in and out, and every turn of the camera is drawn
 between game ticks, so it stays smooth at any frame rate. You take no fall damage while flying, nor for ten seconds
-after. The view widens with speed, and speed lines stream past when you boost. The camera rolls and loops all the
-way round: the game otherwise limits a mod's camera turn to 10 degrees, so the mod carries a small patch for it
-(the `free-shake` mixin in `horizon-mod.toml`). The jets' direct mode uses the same patch to fix the view to the
-cockpit.
+after. The view widens with speed, and speed lines stream past when you boost. Loops go all the way round. Rolls do
+too: the game caps a mod's camera roll at 10 degrees, so past that the mod turns the finished picture of the world
+the rest of the way, widening the view to match so nothing shifts. The jets' direct mode uses the same to fix the
+view to the cockpit.
 
 > [!WARNING]
 > **The powers change the world for good.** Use a throwaway world or back yours up. They never break bedrock or the
@@ -175,7 +175,7 @@ On a newer Nightly, change `horizon` in `horizon-mod.toml` to its commit (and `m
 
 ## How it was checked
 
-- The mod crate builds against Horizon's own SDK at `f00125f`, and its 30 unit tests pass: among them, every jet
+- The mod crate builds against Horizon's own SDK at `f00125f`, and its 32 unit tests pass: among them, every jet
   holds level flight, rolls and pulls the right way, turns to where you look and takes off; rolling over a step or
   a tail strike only scrapes, while a dive into the ground or a cliff is a crash; and Superflight's rolls and
   loops move smoothly from frame to frame.
@@ -190,9 +190,8 @@ On a newer Nightly, change `horizon` in `horizon-mod.toml` to its commit (and `m
 
 | File | What |
 | --- | --- |
-| `horizon-mod.toml` | The manifest: the pinned build and the three mixins. |
-| `src/mixins/shake.rs` | Frees the camera's roll and loop (`free-shake`). |
-| `src/mixins/draw.rs` | Draws the effects and the jets on the GPU once the world is drawn (`draw`). |
+| `horizon-mod.toml` | The manifest: the pinned build and the two mixins. |
+| `src/mixins/draw.rs` | Draws the effects and the jets on the GPU once the world is drawn, and turns the picture past the shake's roll (`draw`). |
 | `src/mixins/needs.rs` | Keeps the world's depth for it (`needs`). |
 | `src/lib.rs` | The hooks. |
 | `src/host.rs` | The game, as the rest of the mod calls it. |

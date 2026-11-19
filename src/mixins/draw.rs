@@ -7,6 +7,9 @@ fn superpowers_draw(world: &mut WorldDrawn<'_>) {
     //    own depth, the world's depth hiding them behind hills), resolved, laid over the picture.
     // 3. The light pass, every night and while any power shows: aurora, shock rings, beams,
     //    lightning, storms, flames, added on top.
+    // 4. Past the 10 degrees of roll the game lets a camera shake give, the picture of the world
+    //    is turned the rest of the way (Superflight's rolls, a jet's cockpit), enlarged to keep
+    //    its corners filled; the view was widened to match.
     //
     // What to draw comes from the mod (`mod_superpowers::gfx`) as plain data; the GPU objects
     // live here and are kept between frames in the mod's `gpu_state`, as `Any`. (A patched
@@ -20,6 +23,9 @@ fn superpowers_draw(world: &mut WorldDrawn<'_>) {
         sampler: wgpu::Sampler,
         // the copy of the picture the lens pass reads, and its size
         scene: Option<(wgpu::Texture, wgpu::TextureView, [u32; 2])>,
+        roll_layout: wgpu::BindGroupLayout,
+        roll: wgpu::RenderPipeline,
+        roll_uniform: wgpu::Buffer,
     }
 
     struct Model {
@@ -175,7 +181,65 @@ fn superpowers_draw(world: &mut WorldDrawn<'_>) {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
-        Effects { format, layout, glow, lens, uniform, sampler, scene: None }
+        let roll_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("superpowers roll"),
+            entries: &[
+                fragment(
+                    0,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                fragment(
+                    1,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                fragment(2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+            ],
+        });
+        let roll_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("superpowers roll"),
+            bind_group_layouts: &[Some(&roll_layout)],
+            ..Default::default()
+        });
+        let roll_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("superpowers roll"),
+            source: wgpu::ShaderSource::Wgsl(mod_superpowers::gfx::ROLL_WGSL.into()),
+        });
+        let roll = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("superpowers roll"),
+            layout: Some(&roll_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &roll_module,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &roll_module,
+                entry_point: Some("fs_roll"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let roll_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("superpowers roll"),
+            size: mod_superpowers::gfx::ROLL_SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Effects { format, layout, glow, lens, uniform, sampler, scene: None, roll_layout, roll, roll_uniform }
     }
 
     fn make_jets(device: &wgpu::Device, format: wgpu::TextureFormat) -> Jets {
@@ -577,9 +641,28 @@ fn superpowers_draw(world: &mut WorldDrawn<'_>) {
     if let (Some((jet_frame, draws)), Some(jets)) = (frame.jets.as_ref(), gpu.jets.as_mut()) {
         draw_jets(jets, world, jet_frame, draws);
     }
+    let Some(effects) = gpu.effects.as_ref() else {
+        return;
+    };
     if frame.glow {
-        if let Some(effects) = gpu.effects.as_ref() {
-            effects_pass(world, &effects.glow, &group);
-        }
+        effects_pass(world, &effects.glow, &group);
+    }
+    if let (Some(roll), Some((scene_texture, scene_view, _))) = (frame.roll.as_ref(), effects.scene.as_ref()) {
+        world.queue.write_buffer(&effects.roll_uniform, 0, roll);
+        world.encoder.copy_texture_to_texture(
+            world.color.as_image_copy(),
+            scene_texture.as_image_copy(),
+            wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+        );
+        let roll_group = world.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("superpowers roll"),
+            layout: &effects.roll_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: effects.roll_uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(scene_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&effects.sampler) },
+            ],
+        });
+        effects_pass(world, &effects.roll, &roll_group);
     }
 }

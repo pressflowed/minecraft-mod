@@ -13,20 +13,10 @@ game = "26.3"
 horizon = "f00125f61f794aaa3d4e950d301f353b35b6ee3d"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
 
-# Superflight rolls and loops the camera all the way round, and a jet's view leans with it. The
-# game bounds the camera shake mods add to 10 degrees a side; this rebuilds the shake's pose with
-# pitch, yaw and roll free (the offset keeps its bound).
-[[native.mixin]]
-id = "free-shake"
-target = "horizon_client::game::native_hooks::Game<'_>::native_shake_matrix"
-kind = "OVERWRITE"
-helper = "src/mixins/shake.rs"
-bindings = [
-  { name = "game", ty = "&Game<'_>", value = "self" },
-  { name = "partial", ty = "f32", value = "partial" },
-]
-
-# The effects and the jets draw with the GPU once the world is drawn.
+# The effects and the jets draw with the GPU once the world is drawn, and past the 10 degrees of
+# roll a camera shake may give, the picture turns the rest of the way (Superflight's rolls, a
+# jet's cockpit). Only functions below the game crate are patched: on this Nightly a patch of a
+# function in the game crate's `game` modules doesn't compile.
 [[native.mixin]]
 id = "draw"
 target = "horizon_mod_render::render::world_drawn"

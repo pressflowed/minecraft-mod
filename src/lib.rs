@@ -152,14 +152,14 @@ impl Hooks for Mod {
         }
     }
 
-    /// The camera rides the jet, every frame, smoothly.
+    /// The camera rides the jet, every frame, smoothly; Superflight's loops go all the way round.
     fn camera_pose(&self, host: &dyn ClientHost, event: &mut CameraPoseEvent<'_>) {
         if !host.on(ID) {
             return;
         }
         let mut pose = (*event.position, event.yaw, event.pitch);
         let third = !host.camera_type().is_first_person();
-        if jet::camera_pose(event.partial, third, &mut pose) {
+        if jet::camera_pose(event.partial, third, &mut pose) || client::camera_pose(event.partial, &mut pose) {
             *event.position = pose.0;
             event.yaw = pose.1;
             event.pitch = pose.2;
@@ -174,7 +174,11 @@ impl Hooks for Mod {
 
     fn compute_fov(&self, host: &dyn ClientHost, event: &mut ComputeFovEvent) {
         if host.on(ID) {
-            event.degrees = client::fov(event.degrees);
+            // past the shake's share, the roll turns the picture, which is shown wider to fit
+            let picture = gfx::split_roll(client::roll(event.partial)).1;
+            event.degrees = gfx::turn_picture(picture, client::fov(event.degrees));
+        } else {
+            gfx::turn_picture(0.0, event.degrees);
         }
     }
 

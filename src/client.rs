@@ -962,11 +962,9 @@ pub fn shake(shake: &mut NativeShake, partial: f32) {
     if c.charge > 0 {
         amount += 0.4 + 1.2 * c.charge as f32 / CHARGE_TICKS as f32;
     }
+    // the roll: the shake's share of it (the picture turns the rest, see `gfx::split_roll`)
+    shake.roll += crate::gfx::split_roll(roll(partial)).0;
     if let Some(f) = c.flying {
-        let partial = f64::from(partial.clamp(0.0, 1.0));
-        shake.roll += f.roll(partial) as f32;
-        // the camera pitches up and over (negative pitch looks up)
-        shake.pitch -= f.loop_angle(partial) as f32;
         if f.boost {
             amount += 0.15;
         }
@@ -979,6 +977,27 @@ pub fn shake(shake: &mut NativeShake, partial: f32) {
         shake.yaw += amount * wobble(41.0, 1.3) * 0.8;
         shake.roll += amount * wobble(37.0, 2.1) * 0.5;
     }
+}
+
+/// The camera's whole roll this frame, degrees (right wing down positive): Superflight's bank
+/// and barrel rolls, or a jet's.
+pub fn roll(partial: f32) -> f32 {
+    if let Some(r) = crate::jet::roll(partial) {
+        return r;
+    }
+    let partial = f64::from(partial.clamp(0.0, 1.0));
+    state().flying.map_or(0.0, |f| f.roll(partial) as f32)
+}
+
+/// Superflight's loop: the camera pitches up, over and round (negative pitch looks up). The
+/// camera's pitch has no limit, so the loop is a whole one.
+pub fn camera_pose(partial: f32, pose: &mut ([f64; 3], f32, f32)) -> bool {
+    let partial = f64::from(partial.clamp(0.0, 1.0));
+    let Some(angle) = state().flying.map(|f| f.loop_angle(partial)).filter(|a| *a != 0.0) else {
+        return false;
+    };
+    pose.2 -= angle as f32;
+    true
 }
 
 /// The field of view: a dash and flying fast widen it.
