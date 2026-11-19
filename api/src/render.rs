@@ -8,7 +8,9 @@
 
 use crate::client::{self, Kind};
 use crate::hud::beam_color;
+use crate::items::Holding;
 use crate::shader;
+use crate::weather;
 use horizon_client::mod_api::{RenderHooks, RenderNeedsEvent, WorldDrawnEvent, wgpu};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -16,8 +18,8 @@ use std::time::Instant;
 
 /// Effects the shader takes at once.
 pub const MAX_EFFECTS: usize = 48;
-/// The `Frame` uniform: two matrices, three vec4s, then the effects of four vec4s each.
-pub const UNIFORM_SIZE: usize = 64 * 2 + 16 * 3 + MAX_EFFECTS * 64;
+/// The `Frame` uniform: two matrices, four vec4s, then the effects of four vec4s each.
+pub const UNIFORM_SIZE: usize = 64 * 2 + 16 * 4 + MAX_EFFECTS * 64;
 
 pub struct Renderer {
     started: Instant,
@@ -216,7 +218,8 @@ pub fn pack(seconds: f32, size: [u32; 2], depth_size: [u32; 2], camera: [f64; 3]
     let mut effects: Vec<[[f32; 4]; 4]> = Vec::with_capacity(MAX_EFFECTS);
     let mut flash = 0.0f32;
     let mut frost = 0.0f32;
-    let mut lens = false;
+    let air = crate::items::atmosphere(&state, camera);
+    let mut lens = air.iter().any(|v| *v > 0.005);
     // speed lines: flying fast, or the Omega Beam
     let mut speed = state.flying.map_or(0.0, |f| if f.boost { (f.speed as f32 / 3.0).min(1.0) } else { 0.0 });
     if state.omega.is_some() {
@@ -255,17 +258,90 @@ pub fn pack(seconds: f32, size: [u32; 2], depth_size: [u32; 2], camera: [f64; 3]
             ]);
         }
     }
+    // The camera's own axes, for things held in front of it.
+    let forward = normalize(unproject(&inv, 0.0, 0.0));
+    let right = normalize({
+        let (a, b) = (unproject(&inv, 1.0, 0.0), unproject(&inv, -1.0, 0.0));
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    });
+    let up = normalize({
+        let (a, b) = (unproject(&inv, 0.0, 1.0), unproject(&inv, 0.0, -1.0));
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    });
+    let items = &state.items;
+    match items.holding {
+        Holding::Gun => {
+            if let Some((size, _)) = items.gripping {
+                // the gun's beam, from the hand to the cube it holds
+                let hand: [f32; 3] = std::array::from_fn(|i| forward[i] * 0.55 - up[i] * 0.28 + right[i] * 0.3);
+                let reach = crate::server::hold_distance(size) as f32;
+                let hold: [f32; 3] = std::array::from_fn(|i| forward[i] * reach);
+                effects.push([
+                    [Kind::Tether as i32 as f32, seconds, 1.0, 0.0],
+                    [hand[0], hand[1], hand[2], 0.0],
+                    [hold[0], hold[1], hold[2], f32::from(size)],
+                    [1.0, 0.55, 0.15, 1.0],
+                ]);
+            } else if let Some(corner) = items.selection {
+                let lo = rel(corner);
+                effects.push([
+                    [Kind::Box as i32 as f32, seconds, 1.0, 0.0],
+                    [lo[0], lo[1], lo[2], f32::from(items.size)],
+                    [0.0; 4],
+                    [1.0, 0.6, 0.2, 1.0],
+                ]);
+            }
+        }
+        Holding::Scepter => {
+            if let Some((at, _)) = items.aim {
+                let event = &weather::EVENTS[items.selected];
+                let radius = marker_radius(items.selected);
+                let p = rel(at);
+                let color = rgb(event.color);
+                effects.push([
+                    [Kind::Marker as i32 as f32, seconds, 1.0, 0.0],
+                    [p[0], p[1], p[2], radius],
+                    [0.0; 4],
+                    [color[0], color[1], color[2], 1.0],
+                ]);
+            }
+        }
+        Holding::Nothing => {}
+    }
     for e in state.effects.iter().rev() {
         let age = e.age(now);
         if age < 0.0 || age > e.duration || effects.len() >= MAX_EFFECTS {
             continue;
         }
         let t = age / e.duration;
-        let at = rel(e.at);
-        let to = match e.kind {
+        let mut at = rel(e.at);
+        let mut to = match e.kind {
             Kind::Dash => rel(e.to),
             _ => [e.to[0] as f32, e.to[1] as f32, e.to[2] as f32],
         };
+        let mut size = e.size;
+        let mut q_w = e.q_w;
+        match e.kind {
+            Kind::Tornado => {
+                let off = weather::tornado_offset(e.path, e.to[2] as u8, f64::from(age));
+                at = rel([e.at[0] + off[0], e.at[1], e.at[2] + off[1]]);
+            }
+            Kind::Meteor => {
+                // `to` is where it comes from: the head falls along it to the impact
+                let left = f64::from(1.0 - t) * weather::METEOR_PATH;
+                at = rel(std::array::from_fn(|i| e.at[i] + e.to[i] * left));
+                to = [-e.to[0] as f32, -e.to[1] as f32, -e.to[2] as f32];
+            }
+            Kind::Tsunami => {
+                let run = f64::from(e.size);
+                let front = (weather::WAVE_SPEED * f64::from(age)).min(run);
+                at = rel(std::array::from_fn(|i| e.at[i] + e.to[i] * front));
+                let crash = ((age - (run / weather::WAVE_SPEED) as f32) / 2.5).clamp(0.0, 1.0);
+                size = weather::WAVE_HEIGHT as f32 * (1.0 - 0.6 * crash * crash);
+                q_w = crash;
+            }
+            _ => {}
+        }
         match e.kind {
             Kind::Punch => flash = flash.max(0.22 * (1.0 - (age / 0.25).min(1.0)).powi(3)),
             Kind::Lightning => flash = flash.max(0.12 * (1.0 - (age / 0.15).min(1.0)).powi(2)),
@@ -275,13 +351,15 @@ pub fn pack(seconds: f32, size: [u32; 2], depth_size: [u32; 2], camera: [f64; 3]
                 lens = true;
             }
             Kind::Gravity | Kind::Shockwave => lens = true,
+            Kind::Tornado | Kind::Hurricane | Kind::Tsunami | Kind::Mushroom | Kind::Smoke => lens = true,
+            Kind::Flare => flash = flash.max(0.3 * (1.0 - (age / 0.8).min(1.0)).powi(2)),
             _ => {}
         }
         effects.push([
             [e.kind as i32 as f32, age, e.duration, e.seed],
-            [at[0], at[1], at[2], e.size],
-            [to[0], to[1], to[2], 0.0],
-            [e.color[0], e.color[1], e.color[2], 1.0],
+            [at[0], at[1], at[2], size],
+            [to[0], to[1], to[2], q_w],
+            [e.color[0], e.color[1], e.color[2], e.c_w],
         ]);
     }
     drop(state);
@@ -299,6 +377,7 @@ pub fn pack(seconds: f32, size: [u32; 2], depth_size: [u32; 2], camera: [f64; 3]
     put(&[seconds, night, size[0] as f32, size[1] as f32]);
     put(&[depth_size[0] as f32, depth_size[1] as f32, wrap(camera[0]), wrap(camera[2])]);
     put(&[effects.len() as f32, flash, frost, speed]);
+    put(&air);
     for effect in &effects {
         for row in effect {
             put(row);
@@ -306,6 +385,21 @@ pub fn pack(seconds: f32, size: [u32; 2], depth_size: [u32; 2], camera: [f64; 3]
     }
     bytes.resize(UNIFORM_SIZE, 0);
     Packed { bytes, lens, glow: night > 0.001 || !effects.is_empty() }
+}
+
+/// The scepter's target ring: about the size of what the event will touch.
+fn marker_radius(event: usize) -> f32 {
+    match event {
+        e if weather::ef(e).is_some() => weather::tornado_radius(weather::ef(e).unwrap_or(1)) as f32,
+        weather::HURRICANE => 30.0,
+        weather::TSUNAMI => 20.0,
+        weather::FLOOD => 48.0,
+        weather::SOLAR_FLARE => 38.0,
+        weather::NUKE => 44.0,
+        weather::METEOR => 17.0,
+        weather::EARTHQUAKE => 25.0,
+        _ => weather::VOLCANO_RADIUS as f32,
+    }
 }
 
 /// How far into the night `day_time` is: 0 by day, 1 in the middle of the night, easing in at
@@ -408,6 +502,6 @@ mod tests {
         let identity: [f32; 16] = std::array::from_fn(|i| if i % 5 == 0 { 1.0 } else { 0.0 });
         let packed = pack(1.0, [8, 8], [8, 8], [0.0; 3], identity, identity);
         assert_eq!(packed.bytes.len(), UNIFORM_SIZE);
-        assert_eq!(UNIFORM_SIZE, 3248);
+        assert_eq!(UNIFORM_SIZE, 3264);
     }
 }

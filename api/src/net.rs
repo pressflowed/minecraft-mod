@@ -1,5 +1,5 @@
 //! What a client tells the server when it uses a power: one short line of text on the mod's
-//! channel, `power;dimension;x;y;z;dx;dy;dz;level`.
+//! channel, `power;dimension;x;y;z;dx;dy;dz;level;value`.
 
 /// The mod's message channel.
 pub const CHANNEL: &str = "superpowers:power";
@@ -19,6 +19,16 @@ pub enum Act {
     AbsoluteZero,
     Singularity,
     Cataclysm,
+    /// The Storm Scepter: `level` is the event, `value` how far away the caller stood.
+    Weather,
+    /// The Gravity Gun: `at` is the cube's lowest corner, `level` its size.
+    Grab,
+    /// The Gravity Gun flings what it holds along `dir`.
+    Fling,
+    /// The Gravity Gun lets go of what it holds.
+    Drop,
+    /// `/superpowers give`: the two items.
+    Give,
 }
 
 impl Act {
@@ -36,6 +46,11 @@ impl Act {
             Act::AbsoluteZero => "absolute_zero",
             Act::Singularity => "singularity",
             Act::Cataclysm => "cataclysm",
+            Act::Weather => "weather",
+            Act::Grab => "grab",
+            Act::Fling => "fling",
+            Act::Drop => "drop",
+            Act::Give => "give",
         }
     }
 
@@ -53,6 +68,11 @@ impl Act {
             "absolute_zero" => Act::AbsoluteZero,
             "singularity" => Act::Singularity,
             "cataclysm" => Act::Cataclysm,
+            "weather" => Act::Weather,
+            "grab" => Act::Grab,
+            "fling" => Act::Fling,
+            "drop" => Act::Drop,
+            "give" => Act::Give,
             _ => return None,
         })
     }
@@ -66,12 +86,13 @@ pub struct Use {
     pub at: [f64; 3],
     pub dir: [f64; 3],
     pub level: u8,
+    pub value: f64,
 }
 
 impl Use {
     pub fn encode(&self) -> Vec<u8> {
         format!(
-            "{};{};{:.3};{:.3};{:.3};{:.4};{:.4};{:.4};{}",
+            "{};{};{:.3};{:.3};{:.3};{:.4};{:.4};{:.4};{};{:.3}",
             self.act.name(),
             self.dimension,
             self.at[0],
@@ -80,7 +101,8 @@ impl Use {
             self.dir[0],
             self.dir[1],
             self.dir[2],
-            self.level
+            self.level,
+            self.value
         )
         .into_bytes()
     }
@@ -114,6 +136,10 @@ impl Use {
         }
         let dir = [dir[0] / length, dir[1] / length, dir[2] / length];
         let level: u8 = parts.next()?.parse().ok()?;
+        let value: f64 = parts.next()?.parse().ok()?;
+        if !value.is_finite() || value.abs() >= 3.0e7 {
+            return None;
+        }
         if parts.next().is_some() {
             return None;
         }
@@ -122,7 +148,13 @@ impl Use {
             dimension: dimension.to_owned(),
             at,
             dir,
-            level: if act == Act::Wrath { level } else { level.clamp(1, 5) },
+            level: match act {
+                Act::Wrath => level,
+                Act::Weather => level.min(crate::weather::EVENTS.len() as u8 - 1),
+                Act::Grab => level.clamp(1, 8),
+                _ => level.clamp(1, 5),
+            },
+            value,
         })
     }
 }
@@ -139,17 +171,27 @@ mod tests {
             at: [12.5, 64.0, -3.25],
             dir: [0.0, 0.0, 1.0],
             level: 3,
+            value: 0.0,
         };
         assert_eq!(Use::decode(&sent.encode()), Some(sent));
+        let storm = Use {
+            act: Act::Weather,
+            dimension: "minecraft:overworld".into(),
+            at: [-400.5, 70.0, 812.25],
+            dir: [0.6, 0.0, 0.8],
+            level: 12,
+            value: 431.5,
+        };
+        assert_eq!(Use::decode(&storm.encode()), Some(storm));
     }
 
     #[test]
     fn odd_bytes_are_refused() {
-        assert_eq!(Use::decode(b"punch;minecraft:overworld;1;2;3;0;0;0;1"), None);
-        assert_eq!(Use::decode(b"nuke;minecraft:overworld;1;2;3;0;0;1;1"), None);
-        assert_eq!(Use::decode(b"punch;Bad Dim;1;2;3;0;0;1;1"), None);
-        assert_eq!(Use::decode(b"punch;minecraft:overworld;NaN;2;3;0;0;1;1"), None);
-        assert_eq!(Use::decode(b"punch;minecraft:overworld;1;2;3;0;0;1;1;extra"), None);
+        assert_eq!(Use::decode(b"punch;minecraft:overworld;1;2;3;0;0;0;1;0"), None);
+        assert_eq!(Use::decode(b"nuke;minecraft:overworld;1;2;3;0;0;1;1;0"), None);
+        assert_eq!(Use::decode(b"punch;Bad Dim;1;2;3;0;0;1;1;0"), None);
+        assert_eq!(Use::decode(b"punch;minecraft:overworld;NaN;2;3;0;0;1;1;0"), None);
+        assert_eq!(Use::decode(b"punch;minecraft:overworld;1;2;3;0;0;1;1;0;extra"), None);
         assert_eq!(Use::decode(&[0xff, 0xfe]), None);
     }
 }

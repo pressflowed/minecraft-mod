@@ -9,27 +9,32 @@
 //! - [`render`] and [`shader`]: two GPU passes after the world is drawn, a lens pass (black
 //!   holes, shock ripples, frost) and a light pass (everything that glows, and the aurora).
 //! - [`hud`]: the panel, the flight read-out and the Cataclysm's charge.
+//! - [`items`] (the window) and [`storms`] (the world): the Storm Scepter's thirteen events and
+//!   the Gravity Gun; [`weather`] holds what both sides work out alike.
 
 mod client;
 mod flight;
 mod hud;
+mod items;
 mod net;
 mod render;
 mod server;
 mod shader;
+mod storms;
+mod weather;
 
 use horizon_client::mod_api::{
-    CameraShakeEvent, ComputeFovEvent, EntityJoinLevelEvent, EntityLeaveLevelEvent, Flow,
-    FrameEvent, Hooks, Host, HudEvent, InteractionKeyEvent, KeyEvent, LevelTickPostEvent,
-    LivingFallEvent, ModsEvent, MovementInputEvent, NetFromClientEvent, RenderHooks,
-    ScreenClosingEvent, ScreenOpeningEvent, TickEvent,
+    CameraShakeEvent, CommandEvent, CommandsEvent, ComputeFovEvent, EntityJoinLevelEvent,
+    EntityLeaveLevelEvent, Flow, FrameEvent, Hooks, Host, HudEvent, InteractionKeyEvent, KeyEvent,
+    LevelTickPostEvent, LivingFallEvent, ModsEvent, MouseScrollingEvent, MovementInputEvent,
+    NetFromClientEvent, RenderHooks, ScreenClosingEvent, ScreenOpeningEvent, TickEvent,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The mod's id, as `horizon-mixin.toml` names it: its keys' lines and its message channel.
 pub const ID: &str = "superpowers";
 pub const NAME: &str = "Superpowers";
-pub const VERSION: &str = "0.4.0";
+pub const VERSION: &str = "0.5.0";
 
 /// The sprint key held (the movement hook doesn't tell): Superflight's boost.
 static SPRINT: AtomicBool = AtomicBool::new(false);
@@ -81,13 +86,45 @@ impl Hooks for Superpowers {
         client::key(host, event.key, event.pressed);
     }
 
-    /// While the laser eyes are on, the use key fires them instead of using the held item.
+    /// While the laser eyes are on, the use key fires them instead of using the held item; the
+    /// Storm Scepter and the Gravity Gun take the buttons they use.
     fn interaction_key(&self, host: &mut dyn Host, event: &mut InteractionKeyEvent) -> Flow {
-        if host.on(ID) && event.button == 1 && client::lasers_on() {
+        if host.on(ID) && (event.button == 1 && client::lasers_on() || items::claims(event.button)) {
             event.swing_hand = false;
             return Flow::Cancel;
         }
         Flow::Continue
+    }
+
+    /// The mouse wheel chooses in the Storm Scepter's picker instead of the hotbar slot.
+    fn mouse_scrolling(&self, host: &mut dyn Host, event: &mut MouseScrollingEvent) -> Flow {
+        if host.on(ID) && items::scroll(host, event.scroll[1]) {
+            return Flow::Cancel;
+        }
+        Flow::Continue
+    }
+
+    fn commands(&self, host: &mut dyn Host, event: &mut CommandsEvent) {
+        if host.on(ID) {
+            event.commands.push(ID);
+        }
+    }
+
+    /// `/superpowers give`: the Storm Scepter and the Gravity Gun.
+    fn command(&self, host: &mut dyn Host, event: &mut CommandEvent) -> Flow {
+        if !host.on(ID) {
+            return Flow::Continue;
+        }
+        let words: Vec<&str> = event.command.split_whitespace().collect();
+        if words.first() != Some(&ID) {
+            return Flow::Continue;
+        }
+        if words.get(1) == Some(&"give") {
+            if let Some(camera) = host.camera() {
+                client::send(host, net::Act::Give, &camera.dimension, camera.position, client::look(&camera), 1);
+            }
+        }
+        Flow::Cancel
     }
 
     fn movement_input(&self, host: &dyn Host, event: &mut MovementInputEvent) {

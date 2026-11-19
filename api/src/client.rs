@@ -67,6 +67,16 @@ pub enum Kind {
     Gravity = 6,
     Dash = 7,
     Orb = 8,
+    Tornado = 9,
+    Hurricane = 10,
+    Tsunami = 11,
+    Mushroom = 12,
+    Smoke = 13,
+    Flare = 14,
+    Meteor = 15,
+    Box = 16,
+    Tether = 17,
+    Marker = 18,
 }
 
 #[derive(Clone, Debug)]
@@ -79,9 +89,21 @@ pub struct Effect {
     pub size: f32,
     pub color: [f32; 3],
     pub seed: f32,
+    /// A tornado's path seed (0 for everything else).
+    pub path: u32,
+    /// What goes in the shader's `q.w` and `c.w` (0 and 1 unless an effect says).
+    pub q_w: f32,
+    pub c_w: f32,
 }
 
 impl Effect {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(kind: Kind, delay: f32, duration: f32, at: V3, to: V3, size: f32, color: [f32; 3]) -> Self {
+        let start = Instant::now() + Duration::from_secs_f32(delay.max(0.0));
+        let seed = ((at[0] * 0.731 + at[2] * 1.37).rem_euclid(97.0)) as f32;
+        Self { kind, start, duration, at, to, size, color, seed, path: 0, q_w: 0.0, c_w: 1.0 }
+    }
+
     pub fn age(&self, now: Instant) -> f32 {
         if now >= self.start {
             now.duration_since(self.start).as_secs_f32()
@@ -137,8 +159,25 @@ pub struct Client {
     pub charge: u32,
     pub charge_at: Option<V3>,
     pub tapped: [Option<Instant>; 2],
+    /// The Storm Scepter and the Gravity Gun.
+    pub items: crate::items::Items,
+    /// Where the camera was last tick.
+    pub eye: V3,
     ticks: u64,
     seed: u32,
+}
+
+impl Client {
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    pub fn push_effect(&mut self, e: Effect) {
+        if self.effects.len() >= 160 {
+            self.effects.remove(0);
+        }
+        self.effects.push(e);
+    }
 }
 
 static CLIENT: Mutex<Client> = Mutex::new(Client {
@@ -157,6 +196,8 @@ static CLIENT: Mutex<Client> = Mutex::new(Client {
     charge: 0,
     charge_at: None,
     tapped: [None, None],
+    items: crate::items::Items::new(),
+    eye: [0.0; 3],
     ticks: 0,
     seed: 0x9E37_79B9,
 });
@@ -177,6 +218,10 @@ pub fn lasers_on() -> bool {
 
 pub fn screen_open(open: bool) {
     SCREEN.store(open, Ordering::Relaxed);
+}
+
+pub fn screen_is_open() -> bool {
+    SCREEN.load(Ordering::Relaxed)
 }
 
 /// Whether a fall should hurt the player now (single player: the client and the server share it).
@@ -207,7 +252,7 @@ pub fn mod_row() -> NativeMod {
         id: ID.to_owned(),
         title: format!("{NAME} {VERSION}"),
         description: "Twelve super powers with big visuals, Superflight with barrel rolls and loops, \
-                      and a 40-chunk Cataclysm. Press H for the keys. Aurora skies at night."
+                      a 40-chunk Cataclysm, and two items: /superpowers give. Press H for the keys."
             .to_owned(),
         keys,
     }
@@ -227,7 +272,7 @@ pub fn look(camera: &NativeCamera) -> V3 {
     flight::look(f64::from(camera.yaw), f64::from(camera.pitch))
 }
 
-fn rand(c: &mut Client) -> f64 {
+pub(crate) fn rand(c: &mut Client) -> f64 {
     let mut x = c.seed;
     x ^= x << 13;
     x ^= x >> 17;
@@ -237,21 +282,22 @@ fn rand(c: &mut Client) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn effect(c: &mut Client, kind: Kind, delay: f32, duration: f32, at: V3, to: V3, size: f32, color: [f32; 3]) {
-    let seed = rand(c) as f32 * 100.0;
-    let start = Instant::now() + Duration::from_secs_f32(delay.max(0.0));
-    if c.effects.len() >= 160 {
-        c.effects.remove(0);
-    }
-    c.effects.push(Effect { kind, start, duration, at, to, size, color, seed });
+pub(crate) fn effect(c: &mut Client, kind: Kind, delay: f32, duration: f32, at: V3, to: V3, size: f32, color: [f32; 3]) {
+    let mut e = Effect::new(kind, delay, duration, at, to, size, color);
+    e.seed = rand(c) as f32 * 100.0;
+    c.push_effect(e);
 }
 
-fn send(host: &mut dyn Host, act: Act, dimension: &str, at: V3, dir: V3, level: u8) {
-    let message = Use { act, dimension: dimension.to_owned(), at, dir, level };
+pub(crate) fn send(host: &mut dyn Host, act: Act, dimension: &str, at: V3, dir: V3, level: u8) {
+    send_value(host, act, dimension, at, dir, level, 0.0);
+}
+
+pub(crate) fn send_value(host: &mut dyn Host, act: Act, dimension: &str, at: V3, dir: V3, level: u8, value: f64) {
+    let message = Use { act, dimension: dimension.to_owned(), at, dir, level, value };
     let _ = host.net_send_to_server(CHANNEL, &message.encode());
 }
 
-fn sound(host: &mut dyn Host, name: &str, at: V3, volume: f32, pitch: f32, delay: i32) {
+pub(crate) fn sound(host: &mut dyn Host, name: &str, at: V3, volume: f32, pitch: f32, delay: i32) {
     let _ = host.play_local_sound(name, at, volume, pitch, delay.clamp(0, 1200));
 }
 
@@ -268,6 +314,7 @@ pub fn tick(host: &mut dyn Host, camera: NativeCamera) {
         let mut c = state();
         c.ticks += 1;
         c.dimension = camera.dimension.clone();
+        c.eye = camera.position;
         let now = Instant::now();
         c.effects.retain(|e| e.age(now) < e.duration + 0.1);
         let omega = c.omega_until.is_some_and(|t| now < t);
@@ -309,10 +356,12 @@ pub fn tick(host: &mut dyn Host, camera: NativeCamera) {
     }
     charge_tick(host, &camera);
     flight_tick(host, &camera);
+    crate::items::tick(host, &camera);
 }
 
 /// Each frame: where the beams hit.
 pub fn frame(host: &mut dyn Host) {
+    crate::items::frame(host);
     let (lasers, omega) = {
         let c = state();
         (c.lasers, c.omega_until.is_some())
@@ -337,6 +386,10 @@ pub fn frame(host: &mut dyn Host) {
 }
 
 pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
+    // a held Storm Scepter or Gravity Gun takes its keys first (R opens the scepter's picker)
+    if crate::items::key(host, key, pressed) {
+        return;
+    }
     // The Cataclysm charges while its key is held.
     if host.mod_key(ID, POWERS[CATACLYSM].key, POWERS[CATACLYSM].default) == key {
         let mut c = state();
@@ -757,6 +810,11 @@ fn flight_tick(host: &mut dyn Host, camera: &NativeCamera) {
 /// The movement keys while flying steer the flight, not the feet.
 pub fn movement(forward: &mut f32, strafe: &mut f32, jump: &mut bool, sneak: &mut bool, sprinting: bool) {
     let mut c = state();
+    if c.items.picker {
+        // A and D choose an event while the Storm Scepter's picker is open
+        *forward = 0.0;
+        *strafe = 0.0;
+    }
     let Some(f) = c.flying.as_mut() else {
         return;
     };
@@ -790,8 +848,10 @@ pub fn shake(shake: &mut NativeShake) {
             Kind::Dash => 1.2 * (1.0 - t).powi(4),
             Kind::Orb => if e.size > 50.0 { 3.0 * (1.0 - t).powi(2) } else { 0.0 },
             Kind::Frost | Kind::Laser => 0.0,
+            _ => 0.0,
         };
     }
+    amount += crate::items::shake(&c, c.eye);
     if c.lasers && c.beam.is_some_and(|b| b.hit) {
         amount += 0.05 * f32::from(c.laser_power);
     }

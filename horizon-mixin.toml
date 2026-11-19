@@ -1,11 +1,11 @@
 # Superpowers: a native trait mod for Horizon (Minecraft Java 26.3 in Rust).
 # Twelve super powers (six of them mega powers), elytra-style Superflight with barrel rolls and loops,
-# a 40-chunk Cataclysm, a keybind panel, and aurora night skies.
+# a 40-chunk Cataclysm, the Storm Scepter (13 disasters) and a Gravity Gun, a keybind panel, and aurora skies.
 # Install it from the launcher's Mods page with "Add from GitHub", or build this folder with
 # `horizon-launcher native-build <this folder> --instance <instance> --trust-native-code`.
 [mod]
 id = "superpowers"
-version = "0.4.0"
+version = "0.5.0"
 
 # The same Horizon commit Orbital Laser pins, so both mods build into one game.
 [compatibility]

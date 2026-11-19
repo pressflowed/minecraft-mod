@@ -3,6 +3,8 @@
 //! one-line hint stays.
 
 use crate::client::{self, CATACLYSM, CHARGE_TICKS, FLIGHT, LASERS, LOOP, PANEL, POWERS};
+use crate::items::Holding;
+use crate::weather::EVENTS;
 use horizon_client::mod_api::{Corner, Corners, Host, HudBatch};
 use std::time::Instant;
 
@@ -15,6 +17,9 @@ fn width_of(text: &str) -> f32 {
 }
 
 pub fn draw(host: &mut dyn Host, batch: &mut HudBatch, corners: &mut Corners) {
+    // the screen's width, from where a box of no width goes in the top right corner
+    let width = corners.place(Corner::TopRight, 0.0, 0.0).0 + 2.0;
+    draw_items(host, batch, corners, width);
     let (panel, lasers, laser_power, ready, flying, charge) = {
         let c = client::state();
         (c.panel, c.lasers, c.laser_power, c.ready, c.flying, c.charge)
@@ -47,6 +52,95 @@ pub fn draw(host: &mut dyn Host, batch: &mut HudBatch, corners: &mut Corners) {
     }
 }
 
+/// The Storm Scepter's and the Gravity Gun's read-outs, the picker, and a passing message.
+fn draw_items(host: &mut dyn Host, batch: &mut HudBatch, corners: &mut Corners, width: f32) {
+    let (holding, selected, picker, aim, ready, size, gripping, toast) = {
+        let c = client::state();
+        let i = &c.items;
+        (i.holding, i.selected, i.picker, i.aim, i.ready, i.size, i.gripping.is_some(), i.toast.clone())
+    };
+    let flight_key = client::key_label(host, POWERS[FLIGHT].key, POWERS[FLIGHT].default);
+    let now = Instant::now();
+    match holding {
+        Holding::Scepter => {
+            let event = &EVENTS[selected];
+            let left = ready[selected].map_or(0.0, |r| r.saturating_duration_since(now).as_secs_f32());
+            let range = match aim {
+                Some((_, d)) => format!("{d:.0} m"),
+                None => "no target".to_owned(),
+            };
+            let title = format!("STORM SCEPTER  {}", event.label.to_uppercase());
+            let hint = format!("RMB summon   hold [{flight_key}] change   {range}");
+            let w = width_of(&title).max(width_of(&hint)) + PAD * 2.0;
+            let (x, y) = corners.place(Corner::BottomRight, w, LINE * 2.0 + 6.0);
+            host.fill(batch, [x, y, w, LINE * 2.0 + 6.0], 0xB010_0818);
+            host.fill(batch, [x, y, w, 1.5], 0xFF00_0000 | event.color);
+            host.text(batch, &title, [x + PAD, y + 3.0], event.color, true);
+            let (status, color) = if left > 0.0 { (format!("{left:.1}s"), 0xFF7070) } else { (String::new(), 0) };
+            host.text(batch, &hint, [x + PAD, y + 3.0 + LINE], 0xB8B8B8, true);
+            if !status.is_empty() {
+                host.text(batch, &status, [x + w - PAD - width_of(&status), y + 3.0], color, true);
+            }
+        }
+        Holding::Gun => {
+            let title = format!("GRAVITY GUN  {size}x{size}x{size}");
+            let hint = if gripping { "LMB fling   RMB drop" } else { "LMB grab   RMB size x2" };
+            let w = width_of(&title).max(width_of(hint)) + PAD * 2.0;
+            let (x, y) = corners.place(Corner::BottomRight, w, LINE * 2.0 + 6.0);
+            host.fill(batch, [x, y, w, LINE * 2.0 + 6.0], 0xB010_0818);
+            host.fill(batch, [x, y, w, 1.5], 0xFFFF_9A2A);
+            host.text(batch, &title, [x + PAD, y + 3.0], 0xFF9A2A, true);
+            host.text(batch, hint, [x + PAD, y + 3.0 + LINE], 0xB8B8B8, true);
+        }
+        Holding::Nothing => {}
+    }
+    if let Some((text, at)) = toast {
+        let age = now.saturating_duration_since(at).as_secs_f32();
+        if age < 2.0 {
+            let w = width_of(&text) + PAD * 2.0;
+            let (x, y) = corners.place(Corner::BottomRight, w, LINE + 2.0);
+            host.fill(batch, [x, y, w, LINE + 2.0], 0x9000_0000);
+            host.text(batch, &text, [x + PAD, y + 2.0], 0xFFE08A, true);
+        }
+    }
+    if picker {
+        // the picker: every event in a column in the middle of the screen, the chosen one lit
+        let w = 230.0;
+        let x = (width - w) / 2.0;
+        let y = 24.0;
+        let rows = EVENTS.len() as f32;
+        let h = PAD * 2.0 + LINE * (rows + 3.2);
+        host.fill(batch, [x, y, w, h], 0xC00A_0612);
+        host.fill(batch, [x, y, w, 1.5], 0xFF6F_A8FF);
+        host.text(batch, "STORM SCEPTER", [x + PAD, y + PAD], 0x9FD0FF, true);
+        let help = "scroll or A/D";
+        host.text(batch, help, [x + w - PAD - width_of(help), y + PAD], 0x8A8A8A, true);
+        let mut row = y + PAD + LINE * 1.4;
+        for (i, event) in EVENTS.iter().enumerate() {
+            let chosen = i == selected;
+            if chosen {
+                host.fill(batch, [x + 2.0, row - 1.5, w - 4.0, LINE + 1.0], 0x7000_0000 | dim(event.color));
+                host.fill(batch, [x + 2.0, row - 1.5, 2.0, LINE + 1.0], 0xFF00_0000 | event.color);
+            }
+            let left = ready[i].map_or(0.0, |r| r.saturating_duration_since(now).as_secs_f32());
+            let mark = if chosen { "> " } else { "  " };
+            let label = format!("{mark}{}", event.label);
+            let color = if chosen { 0xFFFFFF } else { event.color };
+            host.text(batch, &label, [x + PAD + 2.0, row], color, true);
+            let status = if left > 0.0 { format!("{left:.0}s") } else { String::new() };
+            if !status.is_empty() {
+                host.text(batch, &status, [x + w - PAD - width_of(&status), row], 0xFF7070, true);
+            }
+            row += LINE;
+        }
+        let about = EVENTS[selected].about;
+        host.fill(batch, [x + PAD, row + 2.0, w - PAD * 2.0, 1.0], 0x40FF_FFFF);
+        host.text(batch, about, [x + PAD, row + 5.0], 0xD0D0D0, true);
+        let release = format!("let go of [{flight_key}] to choose");
+        host.text(batch, &release, [x + PAD, row + 5.0 + LINE], 0x8A8A8A, true);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_panel(
     host: &mut dyn Host,
@@ -58,7 +152,7 @@ fn draw_panel(
     ready: &[Option<Instant>; 13],
     flying: bool,
 ) {
-    let rows = POWERS.len() as f32 + 1.2 + if lasers { 1.0 } else { 0.0 } + if flying { 1.0 } else { 0.0 };
+    let rows = POWERS.len() as f32 + 1.2 + 3.2 + if lasers { 1.0 } else { 0.0 } + if flying { 1.0 } else { 0.0 };
     let height = PAD * 2.0 + LINE * (rows + 1.6);
     let (x, y) = corners.place(Corner::TopLeft, WIDTH, height);
     // a dark glass panel with a gold rim along its top
@@ -119,6 +213,13 @@ fn draw_panel(
         }
         let _ = CATACLYSM;
     }
+    // the items, at the bottom
+    host.fill(batch, [x + PAD, row + 2.0, WIDTH - PAD * 2.0, 1.0], 0x606F_A8FF);
+    host.text(batch, "ITEMS  /superpowers give", [x + PAD, row + 4.0], 0x9FD0FF, true);
+    row += LINE * 1.2;
+    host.text(batch, "Storm Scepter: breeze rod", [x + PAD, row], 0xB8B8B8, true);
+    row += LINE;
+    host.text(batch, "Gravity Gun: echo shard", [x + PAD, row], 0xB8B8B8, true);
 }
 
 /// A darker shade of `rgb`, for the key boxes.
