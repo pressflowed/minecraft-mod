@@ -1,0 +1,43 @@
+id = "superpowers"
+name = "Superpowers"
+version = "0.7.0"
+description = "Twelve super powers, Superflight, a 40-chunk Cataclysm, the Storm Scepter (13 disasters), a Gravity Gun, and five fully simulated jets with cockpits and weapons. Press H for the keys."
+authors = ["pressflowed"]
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+
+# Made for Horizon Nightly 2026-11-19.
+[native]
+game = "26.3"
+horizon = "f00125f61f794aaa3d4e950d301f353b35b6ee3d"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+# Superflight rolls and loops the camera all the way round, and a jet's view leans with it. The
+# game bounds the camera shake mods add to 10 degrees a side; this rebuilds the shake's pose with
+# pitch, yaw and roll free (the offset keeps its bound).
+[[native.mixin]]
+id = "free-shake"
+target = "horizon_client::game::native_hooks::Game<'_>::native_shake_matrix"
+kind = "OVERWRITE"
+helper = "src/mixins/shake.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "self" },
+  { name = "partial", ty = "f32", value = "partial" },
+]
+
+# The effects and the jets draw with the GPU once the world is drawn.
+[[native.mixin]]
+id = "draw"
+target = "horizon_mod_render::render::world_drawn"
+kind = "HEAD"
+helper = "src/mixins/draw.rs"
+bindings = [{ name = "world", ty = "&mut WorldDrawn<'_>", value = "&mut *world" }]
+
+# They read the world's depth: to hide behind hills, and to light the ground.
+[[native.mixin]]
+id = "needs"
+target = "horizon_mod_render::render::render_needs"
+kind = "HEAD"
+helper = "src/mixins/needs.rs"
+bindings = [{ name = "needs", ty = "&mut RenderNeeds", value = "&mut *needs" }]

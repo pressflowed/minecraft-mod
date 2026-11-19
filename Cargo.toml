@@ -1,0 +1,8 @@
+[package]
+name = "mod-superpowers"
+version = "0.7.0"
+edition = "2024"
+
+[dependencies]
+# The pinned SDK's API crate: the launcher fetches the build the mod is pinned to into .horizon/.
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }

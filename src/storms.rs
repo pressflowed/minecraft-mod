@@ -5,7 +5,7 @@
 
 use crate::server::{self, BREAKABLE};
 use crate::weather::{self, Dice, EVENTS};
-use horizon_client::mod_api::{Host, NativeBlockEdit, NativeBlockRun, NativeHeightmap};
+use crate::host::{Host, NativeBlockEdit, NativeBlockRun, NativeHeightmap};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 
@@ -91,7 +91,7 @@ fn smooth(x: f64) -> f64 {
 }
 
 /// One tick of `storm` in its level.
-pub fn step(host: &mut dyn Host, storm: &mut Storm) {
+pub fn step(host: &mut Host<'_>, storm: &mut Storm) {
     let dimension = storm.dimension.clone();
     let dim = dimension.as_str();
     match storm.event {
@@ -121,7 +121,7 @@ struct Edit {
 }
 
 impl Edit {
-    fn new(host: &dyn Host, palette: &[&str], filters: &[&str]) -> Self {
+    fn new(host: &Host<'_>, palette: &[&str], filters: &[&str]) -> Self {
         let (min_y, height) = host.world_height();
         Self {
             palette: palette.iter().map(|s| (*s).to_owned()).collect(),
@@ -149,7 +149,7 @@ impl Edit {
         }
     }
 
-    fn apply(self, host: &mut dyn Host, dimension: &str) {
+    fn apply(self, host: &mut Host<'_>, dimension: &str) {
         if self.runs.is_empty() {
             return;
         }
@@ -159,7 +159,7 @@ impl Edit {
 }
 
 /// Each column's height on `map` (the first free block over it), None where not loaded.
-fn heights(host: &dyn Host, dimension: &str, columns: &[(i32, i32)], map: NativeHeightmap) -> Vec<Option<i32>> {
+fn heights(host: &Host<'_>, dimension: &str, columns: &[(i32, i32)], map: NativeHeightmap) -> Vec<Option<i32>> {
     if columns.is_empty() {
         return Vec::new();
     }
@@ -199,7 +199,7 @@ fn speckle(x: i32, z: i32, salt: u32) -> f64 {
 }
 
 /// Throws the top block of column `(x, z)` (read on the level's top solid surface) at `velocity`.
-fn toss(host: &mut dyn Host, dimension: &str, x: i32, z: i32, below: i32, velocity: [f64; 3]) {
+fn toss(host: &mut Host<'_>, dimension: &str, x: i32, z: i32, below: i32, velocity: [f64; 3]) {
     let h = heights(host, dimension, &[(x, z)], NativeHeightmap::OceanFloor);
     let Some(Some(top)) = h.first().copied() else {
         return;
@@ -221,7 +221,7 @@ fn lightning(dimension: &str, at: [f64; 3]) {
 
 // ---- tornadoes ----------------------------------------------------------------------------------
 
-fn tornado(host: &mut dyn Host, dim: &str, s: &mut Storm, ef: u8) {
+fn tornado(host: &mut Host<'_>, dim: &str, s: &mut Storm, ef: u8) {
     if s.age % 2 != 0 {
         return;
     }
@@ -314,7 +314,7 @@ fn tornado(host: &mut dyn Host, dim: &str, s: &mut Storm, ef: u8) {
 const HURRICANE_RADIUS: f64 = 140.0;
 const EYE: f64 = 16.0;
 
-fn hurricane(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn hurricane(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     if s.age % 2 != 0 {
         return;
     }
@@ -404,7 +404,7 @@ fn hurricane(host: &mut dyn Host, dim: &str, s: &mut Storm) {
 
 // ---- tsunami ------------------------------------------------------------------------------------
 
-fn tsunami(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn tsunami(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     if s.age % 2 != 0 {
         return;
     }
@@ -513,7 +513,7 @@ fn tsunami(host: &mut dyn Host, dim: &str, s: &mut Storm) {
 const FLOOD_RADIUS: f64 = 48.0;
 const FLOOD_LEVELS: u64 = 9;
 
-fn flood(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn flood(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     if s.age < 30 || (s.age - 30) % 40 != 0 {
         return;
     }
@@ -546,7 +546,7 @@ fn flood(host: &mut dyn Host, dim: &str, s: &mut Storm) {
 const FLARE_RADIUS: f64 = 38.0;
 const FLARE_CORE: f64 = 9.0;
 
-fn flare(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn flare(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     let t = s.seconds();
     if !(0.8..6.5).contains(&t) || s.age % 4 != 0 {
         return;
@@ -620,7 +620,7 @@ fn flare(host: &mut dyn Host, dim: &str, s: &mut Storm) {
 const NUKE_CRATER: f64 = 44.0;
 const NUKE_REACH: f64 = 150.0;
 
-fn nuke(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn nuke(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     let at = s.at;
     if s.age == 0 {
         server::queue_crater(dim, at, NUKE_CRATER, 28.0, 70.0, 6.0);
@@ -687,7 +687,7 @@ fn nuke(host: &mut dyn Host, dim: &str, s: &mut Storm) {
 
 const METEOR_CRATER: f64 = 17.0;
 
-fn meteor(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn meteor(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     let impact = (weather::METEOR_SECONDS * 20.0) as u64;
     let at = s.at;
     if s.age == impact {
@@ -746,7 +746,7 @@ fn meteor(host: &mut dyn Host, dim: &str, s: &mut Storm) {
 
 const QUAKE_REACH: f64 = 90.0;
 
-fn earthquake(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn earthquake(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     if s.age % 2 != 0 {
         return;
     }
@@ -831,7 +831,7 @@ fn cone(d: f64) -> f64 {
     }
 }
 
-fn volcano(host: &mut dyn Host, dim: &str, s: &mut Storm) {
+fn volcano(host: &mut Host<'_>, dim: &str, s: &mut Storm) {
     let at = s.at;
     let r = weather::VOLCANO_RADIUS;
     let (cx, cz) = (at[0], at[2]);

@@ -3,8 +3,8 @@
 
 use crate::flight::{self, V3};
 use crate::net::{Act, CHANNEL, Use};
-use crate::{ID, NAME, VERSION};
-use horizon_client::mod_api::{Host, NativeCamera, NativeMod, NativeShake};
+use crate::ID;
+use crate::host::{Host, NativeCamera, NativeShake};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -123,23 +123,74 @@ pub struct Beam {
 }
 
 /// Superflight: the visual roll and pitch the camera adds, and the manoeuvres in progress.
+///
+/// Everything the camera shows is kept for this tick and the last, and drawn between the two by
+/// the frame's partial tick, so it is smooth at any frame rate. The flight path itself has
+/// momentum: it swings round toward the view instead of snapping to it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Flying {
-    /// Degrees, right wing down positive: the bank from A/D and from turning.
+    /// Degrees, right wing down positive: the bank from A/D and from turning (now, last tick).
     pub bank: f64,
-    /// A barrel roll: degrees turned so far, and which way.
+    pub prev_bank: f64,
+    /// A barrel roll: ticks into it (0 when none, now and last tick), and which way.
     pub barrel: f64,
+    pub prev_barrel: f64,
     pub barrel_dir: f64,
-    /// A loop: degrees turned so far (0 when none).
+    /// A loop: ticks into it (0 when none, now and last tick).
     pub looping: f64,
+    pub prev_looping: f64,
     pub forward: f64,
     pub strafe: f64,
     pub lift: f64,
     pub boost: bool,
     /// What was pushed last tick, to work out this tick's push.
     pub velocity: V3,
-    pub last_yaw: Option<f64>,
+    /// Where the flight is heading (a unit vector; zero before the first tick).
+    pub dir: V3,
     pub speed: f64,
+    pub prev_speed: f64,
+}
+
+/// How long a barrel roll and a loop take, in ticks.
+pub const BARREL_TICKS: f64 = 16.0;
+pub const LOOP_TICKS: f64 = 30.0;
+
+/// Eases a manoeuvre in and out (0 to 1).
+fn ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// Degrees turned `ticks` into a manoeuvre `total` ticks long.
+fn turned(ticks: f64, total: f64) -> f64 {
+    if ticks <= 0.0 { 0.0 } else { 360.0 * ease(ticks / total) }
+}
+
+/// A manoeuvre's degrees between last tick and now: one that just ended is drawn to its end.
+fn between(prev: f64, now: f64, total: f64, partial: f64) -> f64 {
+    if prev <= 0.0 && now <= 0.0 {
+        return 0.0;
+    }
+    let now = if now <= 0.0 { total } else { now };
+    turned(prev + (now - prev) * partial, total)
+}
+
+impl Flying {
+    /// The camera's roll this frame: the bank and any barrel roll.
+    pub fn roll(&self, partial: f64) -> f64 {
+        let bank = self.prev_bank + (self.bank - self.prev_bank) * partial;
+        bank + between(self.prev_barrel, self.barrel, BARREL_TICKS, partial) * self.barrel_dir
+    }
+
+    /// How far round a loop the camera is this frame, in degrees.
+    pub fn loop_angle(&self, partial: f64) -> f64 {
+        between(self.prev_looping, self.looping, LOOP_TICKS, partial)
+    }
+
+    /// The speed this frame, in blocks a tick.
+    pub fn speed_at(&self, partial: f64) -> f64 {
+        self.prev_speed + (self.speed - self.prev_speed) * partial
+    }
 }
 
 pub struct Client {
@@ -240,26 +291,51 @@ pub(crate) fn protect_falls(seconds: f32) {
     }
 }
 
-pub fn mod_row() -> NativeMod {
-    let mut keys: Vec<[String; 3]> = POWERS
-        .iter()
-        .map(|p| [p.key.to_owned(), p.label.to_owned(), p.default.to_owned()])
-        .collect();
-    for (key, label, default) in [PANEL, LOOP].into_iter().chain(crate::jet::KEYS) {
-        keys.push([key.to_owned(), label.to_owned(), default.to_owned()]);
+/// Every key the mod registers: (id, label, default key).
+pub fn all_keys() -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut keys: Vec<_> = POWERS.iter().map(|p| (p.key, p.label, p.default)).collect();
+    keys.extend([PANEL, LOOP]);
+    keys.extend(crate::jet::KEYS);
+    keys
+}
+
+/// Which of the mod's keys were held at the last poll.
+static HELD: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+
+/// Each tick: the mod's own keys, as presses and releases under `superpowers:<key>` (a tap
+/// shorter than a tick still counts, from its click).
+pub fn poll_keys(host: &mut Host<'_>) {
+    let keys = all_keys();
+    let mut events = Vec::new();
+    {
+        let mut held = HELD.lock().unwrap_or_else(|p| p.into_inner());
+        held.resize(keys.len(), false);
+        for (i, (key, _, _)) in keys.iter().enumerate() {
+            let mut clicks = 0;
+            while clicks < 16 && host.consume_click(key) {
+                clicks += 1;
+            }
+            let down = host.is_down(key);
+            let name = format!("{ID}:{key}");
+            match (held[i], down) {
+                (false, true) => events.push((name, true)),
+                (true, false) => events.push((name, false)),
+                (false, false) if clicks > 0 => {
+                    events.push((name.clone(), true));
+                    events.push((name, false));
+                }
+                _ => {}
+            }
+            held[i] = down;
+        }
     }
-    NativeMod {
-        id: ID.to_owned(),
-        title: format!("{NAME} {VERSION}"),
-        description: "Twelve super powers with big visuals, Superflight with barrel rolls and loops, \
-                      a 40-chunk Cataclysm, five simulated jets (P), and two items (/superpowers give). Press H."
-            .to_owned(),
-        keys,
+    for (name, pressed) in events {
+        key(host, &name, pressed);
     }
 }
 
-pub fn key_label(host: &dyn Host, key: &str, default: &str) -> String {
-    let bound = host.mod_key(ID, key, default);
+pub fn key_label(host: &Host<'_>, key: &str, default: &str) -> String {
+    let bound = host.bound_key(ID, key, default);
     match bound.as_str() {
         "key.mouse.left" => "LMB".to_owned(),
         "key.mouse.right" => "RMB".to_owned(),
@@ -288,27 +364,27 @@ pub(crate) fn effect(c: &mut Client, kind: Kind, delay: f32, duration: f32, at: 
     c.push_effect(e);
 }
 
-pub(crate) fn send(host: &mut dyn Host, act: Act, dimension: &str, at: V3, dir: V3, level: u8) {
+pub(crate) fn send(host: &mut Host<'_>, act: Act, dimension: &str, at: V3, dir: V3, level: u8) {
     send_value(host, act, dimension, at, dir, level, 0.0);
 }
 
-pub(crate) fn send_value(host: &mut dyn Host, act: Act, dimension: &str, at: V3, dir: V3, level: u8, value: f64) {
+pub(crate) fn send_value(host: &mut Host<'_>, act: Act, dimension: &str, at: V3, dir: V3, level: u8, value: f64) {
     let message = Use { act, dimension: dimension.to_owned(), at, dir, level, value };
     let _ = host.net_send_to_server(CHANNEL, &message.encode());
 }
 
-pub(crate) fn sound(host: &mut dyn Host, name: &str, at: V3, volume: f32, pitch: f32, delay: i32) {
+pub(crate) fn sound(host: &mut Host<'_>, name: &str, at: V3, volume: f32, pitch: f32, delay: i32) {
     let _ = host.play_local_sound(name, at, volume, pitch, delay.clamp(0, 1200));
 }
 
-fn target(host: &dyn Host, eye: V3, dir: V3, reach: f32, otherwise: f64) -> (V3, bool) {
+fn target(host: &Host<'_>, eye: V3, dir: V3, reach: f32, otherwise: f64) -> (V3, bool) {
     match host.raycast(reach) {
         Some(hit) => ([hit.x, hit.y, hit.z], true),
         None => (flight::add(eye, flight::scale(dir, otherwise)), false),
     }
 }
 
-pub fn tick(host: &mut dyn Host, camera: NativeCamera) {
+pub fn tick(host: &mut Host<'_>, camera: NativeCamera) {
     DAY_TIME.store(host.day_time(), Ordering::Relaxed);
     let (lasers, power, beam, omega, dimension, ticks) = {
         let mut c = state();
@@ -361,7 +437,7 @@ pub fn tick(host: &mut dyn Host, camera: NativeCamera) {
 }
 
 /// Each frame: where the beams hit.
-pub fn frame(host: &mut dyn Host) {
+pub fn frame(host: &mut Host<'_>) {
     crate::items::frame(host);
     crate::jet::frame(host);
     let (lasers, omega) = {
@@ -387,11 +463,12 @@ pub fn frame(host: &mut dyn Host) {
     }
 }
 
-pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
+/// A key went down or up; true when a jet or a held item took it.
+pub fn key(host: &mut Host<'_>, key: &str, pressed: bool) -> bool {
     // a jet takes its keys first, then a held Storm Scepter or Gravity Gun (R opens the
     // scepter's picker)
     if crate::jet::key(host, key, pressed) || crate::items::key(host, key, pressed) {
-        return;
+        return true;
     }
     // The Cataclysm charges while its key is held.
     if host.mod_key(ID, POWERS[CATACLYSM].key, POWERS[CATACLYSM].default) == key {
@@ -401,10 +478,10 @@ pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
             c.charge = 0;
             c.charge_at = None;
         }
-        return;
+        return false;
     }
     if !pressed {
-        return;
+        return false;
     }
     // Right click raises the laser eyes' power while they are on: 1 to 5, then back to 1.
     if key == "key.mouse.right" {
@@ -420,7 +497,7 @@ pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
         }
     }
     if SCREEN.load(Ordering::Relaxed) {
-        return;
+        return false;
     }
     // A double tap of A or D while flying: a barrel roll that way.
     for (side, name) in [(0usize, "key.keyboard.a"), (1, "key.keyboard.d")] {
@@ -437,6 +514,7 @@ pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
                     if f.barrel == 0.0 {
                         f.barrel_dir = if side == 1 { 1.0 } else { -1.0 };
                         f.barrel = 0.001;
+                        f.prev_barrel = 0.0;
                     }
                 }
             }
@@ -451,6 +529,7 @@ pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
         if let Some(f) = c.flying.as_mut() {
             if f.looping == 0.0 {
                 f.looping = 0.001;
+                f.prev_looping = 0.0;
             }
         }
     }
@@ -459,6 +538,7 @@ pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
             activate(host, index);
         }
     }
+    false
 }
 
 fn ready(index: usize) -> bool {
@@ -471,7 +551,7 @@ fn ready(index: usize) -> bool {
     true
 }
 
-fn activate(host: &mut dyn Host, index: usize) {
+fn activate(host: &mut Host<'_>, index: usize) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -515,7 +595,7 @@ fn activate(host: &mut dyn Host, index: usize) {
 }
 
 /// Super Punch, and Titan Fist (`k` 5).
-fn punch(host: &mut dyn Host, dimension: &str, eye: V3, dir: V3, k: f32) {
+fn punch(host: &mut Host<'_>, dimension: &str, eye: V3, dir: V3, k: f32) {
     let (impact, _) = target(host, eye, dir, 5.0 * k, 3.5);
     let ground = [impact[0], impact[1] - 0.5, impact[2]];
     let fist = flight::add(flight::add(eye, flight::scale(dir, 0.7)), [0.0, -0.25, 0.0]);
@@ -561,7 +641,7 @@ pub fn bolts(seed: u8, count: usize, radius: f64, over_ticks: u32) -> Vec<([f64;
 }
 
 /// Thunder Strike, or Wrath of the Gods.
-fn thunder(host: &mut dyn Host, dimension: &str, eye: V3, dir: V3, wrath: bool) {
+fn thunder(host: &mut Host<'_>, dimension: &str, eye: V3, dir: V3, wrath: bool) {
     let (center, _) = target(host, eye, dir, 192.0, 48.0);
     let seed = (rand(&mut state()) * 255.0) as u8;
     let (count, radius, ticks) = if wrath { (36, 46.0, 70) } else { (7, 8.0, 18) };
@@ -588,7 +668,7 @@ fn thunder(host: &mut dyn Host, dimension: &str, eye: V3, dir: V3, wrath: bool) 
 }
 
 /// Frost Nova, or Absolute Zero.
-fn frost(host: &mut dyn Host, dimension: &str, eye: V3, absolute: bool) {
+fn frost(host: &mut Host<'_>, dimension: &str, eye: V3, absolute: bool) {
     let feet = [eye[0], eye[1] - 1.62, eye[2]];
     let r = if absolute { 70.0 } else { 15.0 };
     {
@@ -610,7 +690,7 @@ fn frost(host: &mut dyn Host, dimension: &str, eye: V3, absolute: bool) {
 }
 
 /// Gravity Well, or the Singularity.
-fn gravity(host: &mut dyn Host, dimension: &str, eye: V3, dir: V3, singularity: bool) {
+fn gravity(host: &mut Host<'_>, dimension: &str, eye: V3, dir: V3, singularity: bool) {
     let (reach, back, up) = if singularity { (160.0, 20.0, 18.0) } else { (48.0, 3.0, 2.5) };
     let (hit, found) = target(host, eye, dir, reach, if singularity { 70.0 } else { 18.0 });
     let center = if found { flight::add(hit, flight::scale(dir, -back)) } else { hit };
@@ -632,7 +712,7 @@ fn gravity(host: &mut dyn Host, dimension: &str, eye: V3, dir: V3, singularity: 
 }
 
 /// Hyper Dash.
-fn dash(host: &mut dyn Host, dimension: &str, eye: V3, dir: V3) {
+fn dash(host: &mut Host<'_>, dimension: &str, eye: V3, dir: V3) {
     let push = [dir[0] * 3.4, (dir[1] * 3.4 + 0.35).clamp(-4.0, 4.0), dir[2] * 3.4];
     host.push_player([push[0] as f32, push[1] as f32, push[2] as f32]);
     let end = flight::add(eye, flight::scale(dir, 16.0));
@@ -652,7 +732,7 @@ fn dash(host: &mut dyn Host, dimension: &str, eye: V3, dir: V3) {
 }
 
 /// The Cataclysm: hold its key for two seconds; letting go calls it off.
-fn charge_tick(host: &mut dyn Host, camera: &NativeCamera) {
+fn charge_tick(host: &mut Host<'_>, camera: &NativeCamera) {
     let (held, ready_at) = {
         let c = state();
         (c.charge_held, c.ready[CATACLYSM])
@@ -694,7 +774,7 @@ fn charge_tick(host: &mut dyn Host, camera: &NativeCamera) {
     cataclysm(host, &camera.dimension, eye, center);
 }
 
-fn cataclysm(host: &mut dyn Host, dimension: &str, eye: V3, center: V3) {
+fn cataclysm(host: &mut Host<'_>, dimension: &str, eye: V3, center: V3) {
     let r = CATACLYSM_RADIUS as f32;
     {
         let mut c = state();
@@ -726,7 +806,7 @@ fn cataclysm(host: &mut dyn Host, dimension: &str, eye: V3, center: V3) {
     send(host, Act::Cataclysm, dimension, center, dir, 1);
 }
 
-fn toggle_flight(host: &mut dyn Host, eye: V3) {
+fn toggle_flight(host: &mut Host<'_>, eye: V3) {
     let on = {
         let mut c = state();
         if c.flying.take().is_some() {
@@ -747,42 +827,53 @@ fn toggle_flight(host: &mut dyn Host, eye: V3) {
     }
 }
 
-/// Superflight, each tick: fly where the player looks (the camera's view). A loop carries the
-/// flight up and over; a barrel roll swings it round the line of flight.
-fn flight_tick(host: &mut dyn Host, camera: &NativeCamera) {
+/// Superflight, each tick: fly where the player looks (the camera's view), the flight path
+/// swinging round to it with some momentum. A loop carries the flight up and over; a barrel roll
+/// swings it round the line of flight.
+fn flight_tick(host: &mut Host<'_>, camera: &NativeCamera) {
+    let actual = host.player_velocity();
     let push = {
         let mut c = state();
         let Some(f) = c.flying.as_mut() else {
             return;
         };
-        let yaw = f64::from(camera.yaw);
+        f.prev_bank = f.bank;
+        f.prev_barrel = f.barrel;
+        f.prev_looping = f.looping;
+        f.prev_speed = f.speed;
         let look = look(camera);
         let right = flight::normalize(flight::cross(look, [0.0, 1.0, 0.0]));
-        // bank into turns, and with A/D
-        let turn = f.last_yaw.map_or(0.0, |last| ((yaw - last + 180.0).rem_euclid(360.0)) - 180.0);
-        f.last_yaw = Some(yaw);
-        let bank_target = (turn * 3.0).clamp(-50.0, 50.0) + f.strafe * 40.0;
-        f.bank += (bank_target - f.bank) * 0.2;
         let mut heading = look;
         if f.looping > 0.0 {
-            f.looping += 15.0;
+            f.looping += 1.0;
             // the line of flight pitches up and over with the camera
-            heading = flight::rotate(look, right, f.looping.to_radians());
-            if f.looping >= 360.0 {
+            heading = flight::rotate(look, right, turned(f.looping, LOOP_TICKS).to_radians());
+            if f.looping >= LOOP_TICKS {
                 f.looping = 0.0;
             }
         }
         let mut sideways = [0.0; 3];
-        if f.barrel != 0.0 {
-            f.barrel += 30.0;
-            let a = f.barrel.to_radians();
+        if f.barrel > 0.0 {
+            f.barrel += 1.0;
+            let a = turned(f.barrel, BARREL_TICKS).to_radians();
             // round the line of flight: a corkscrew
             let up = flight::cross(right, look);
             sideways = flight::add(flight::scale(right, a.sin() * 0.6 * f.barrel_dir), flight::scale(up, (1.0 - a.cos()) * 0.3));
-            if f.barrel >= 360.0 {
+            if f.barrel >= BARREL_TICKS {
                 f.barrel = 0.0;
             }
         }
+        // momentum: the path turns toward the view, harder in a loop, softer at full boost
+        let was = if flight::length(f.dir) < 0.5 { look } else { f.dir };
+        let grip = if f.looping > 0.0 { 0.7 } else if f.boost { 0.2 } else { 0.32 };
+        let dir = flight::normalize(flight::add(was, flight::scale(flight::sub(heading, was), grip)));
+        f.dir = dir;
+        // bank into the turn the path makes, and with A/D
+        let yaw_of = |d: V3| (-d[0]).atan2(d[2]).to_degrees();
+        let turn = ((yaw_of(dir) - yaw_of(was) + 180.0).rem_euclid(360.0)) - 180.0;
+        let turn = if dir[1].abs() > 0.97 || was[1].abs() > 0.97 { 0.0 } else { turn };
+        let bank_target = (turn * 4.0).clamp(-55.0, 55.0) + f.strafe * 35.0;
+        f.bank += (bank_target - f.bank) * 0.18;
         let speed = if f.forward < 0.0 {
             0.15
         } else if f.boost {
@@ -790,15 +881,15 @@ fn flight_tick(host: &mut dyn Host, camera: &NativeCamera) {
         } else {
             1.1 * (0.6 + 0.4 * f.forward.max(0.0))
         };
-        f.speed += (speed - f.speed) * 0.15;
+        f.speed += (speed - f.speed) * 0.12;
         let target = flight::add(
-            flight::add(flight::scale(heading, f.speed), flight::scale(right, f.strafe * 0.3)),
+            flight::add(flight::scale(dir, f.speed), flight::scale(right, f.strafe * 0.3)),
             flight::add([0.0, f.lift * 0.6, 0.0], sideways),
         );
-        // The game moves the player itself, with drag and gravity after our push: undo what
-        // they did to last tick's velocity, and aim for the new one.
-        let after = [f.velocity[0] * 0.91, (f.velocity[1] - 0.08) * 0.98, f.velocity[2] * 0.91];
-        let push = flight::sub(target, after).map(|v| v.clamp(-4.0, 4.0));
+        // The game moves the player itself, with drag and gravity after our push: aim the
+        // velocity it has now (after a wall or the ground stopped it, too) at the new one.
+        let now = actual.unwrap_or([f.velocity[0] * 0.91, (f.velocity[1] - 0.08) * 0.98, f.velocity[2] * 0.91]);
+        let push = flight::sub(target, now).map(|v| v.clamp(-4.0, 4.0));
         f.velocity = target;
         push
     };
@@ -835,8 +926,9 @@ pub fn movement(forward: &mut f32, strafe: &mut f32, jump: &mut bool, sneak: &mu
     *sneak = false;
 }
 
-/// Each effect's push on the camera, plus Superflight's bank, barrel roll and loop.
-pub fn shake(shake: &mut NativeShake) {
+/// Each effect's push on the camera, plus Superflight's bank, barrel roll and loop, drawn
+/// `partial` of the way from last tick to this one.
+pub fn shake(shake: &mut NativeShake, partial: f32) {
     let c = state();
     let now = Instant::now();
     let mut amount = 0.0f32;
@@ -871,9 +963,10 @@ pub fn shake(shake: &mut NativeShake) {
         amount += 0.4 + 1.2 * c.charge as f32 / CHARGE_TICKS as f32;
     }
     if let Some(f) = c.flying {
-        shake.roll += (f.bank + f.barrel * f.barrel_dir) as f32;
+        let partial = f64::from(partial.clamp(0.0, 1.0));
+        shake.roll += f.roll(partial) as f32;
         // the camera pitches up and over (negative pitch looks up)
-        shake.pitch -= f.looping as f32;
+        shake.pitch -= f.loop_angle(partial) as f32;
         if f.boost {
             amount += 0.15;
         }
@@ -901,7 +994,8 @@ pub fn fov(degrees: f32) -> f32 {
         }
     }
     if let Some(f) = c.flying {
-        out += (f.speed as f32 * 6.0).min(22.0);
+        let partial = f64::from(crate::jet::partial());
+        out += (f.speed_at(partial) as f32 * 6.0).min(22.0);
     }
     out.clamp(1.0, 170.0)
 }
@@ -921,6 +1015,41 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), count);
         assert!(CATACLYSM_RADIUS * 2.0 / 16.0 >= 38.0);
+    }
+
+    #[test]
+    fn superflight_rolls_and_loops_glide_between_ticks() {
+        // a barrel roll and a loop, ticked as `flight_tick` ticks them and drawn at 8 frames a
+        // tick: every frame moves on a little, none jumps
+        for (total, step) in [(BARREL_TICKS, 0usize), (LOOP_TICKS, 1)] {
+            let mut f = Flying::default();
+            let mut ticks = 0.001;
+            let mut last = 0.0f64;
+            let mut biggest = 0.0f64;
+            for _ in 0..(total as usize + 3) {
+                let prev = ticks;
+                if ticks > 0.0 {
+                    ticks += 1.0;
+                    if ticks >= total {
+                        ticks = 0.0;
+                    }
+                }
+                if step == 0 {
+                    (f.prev_barrel, f.barrel, f.barrel_dir) = (prev, ticks, 1.0);
+                } else {
+                    (f.prev_looping, f.looping) = (prev, ticks);
+                }
+                for frame in 0..8 {
+                    let partial = f64::from(frame) / 8.0;
+                    let angle = if step == 0 { f.roll(partial) } else { f.loop_angle(partial) };
+                    // 360 and 0 are the same turn
+                    let delta = (angle - last + 180.0).rem_euclid(360.0) - 180.0;
+                    biggest = biggest.max(delta.abs());
+                    last = angle;
+                }
+            }
+            assert!(biggest < 360.0 / total * 0.35, "a frame jumped {biggest:.1} degrees");
+        }
     }
 
     #[test]

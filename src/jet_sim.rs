@@ -13,6 +13,12 @@
 
 use std::ops::{Add, AddAssign, Mul, Neg, Sub};
 
+/// Sink rates (blocks a second) the airframe and the landing gear take, and how fast it may
+/// scrape along a wall before that is a crash.
+pub const CRASH_SINK: f64 = 10.0;
+pub const CRASH_GEAR: f64 = 13.0;
+pub const CRASH_WALL: f64 = 22.0;
+
 pub const GRAVITY: f64 = 9.81;
 /// Air at sea level, thicker than Earth's: Minecraft's skies are small, so jets fly slower here
 /// and need more air under their wings.
@@ -1061,7 +1067,7 @@ impl Sim {
                 }
                 let pen = (h - p.y).min(1.0);
                 let pv = self.vel + self.rot.rotate(self.omega.cross(*wheel));
-                if pv.y < -11.0 {
+                if pv.y < -CRASH_GEAR {
                     self.crashed = Some(Crash::Gear);
                     return (V::ZERO, V::ZERO);
                 }
@@ -1090,8 +1096,13 @@ impl Sim {
                 continue;
             }
             let pv = self.vel + self.rot.rotate(self.omega.cross(*point));
-            if pv.len() > 9.0 {
-                self.crashed = Some(if pv.y < -2.0 { Crash::Ground } else { Crash::Obstacle });
+            // A crash is a real impact: coming down hard, or flying into a wall. A tail strike, a belly landing or a bump over a step at
+            // speed is a scrape. A wall: the terrain stands more than a step and a half above the
+            // point (or so high its top is out of reach).
+            let wall = ground.height(p.x, p.y + 2.5, p.z).is_none_or(|h| h - p.y > 1.6);
+            let across = v(pv.x, 0.0, pv.z).len();
+            if pv.y < -CRASH_SINK || wall && across > CRASH_WALL {
+                self.crashed = Some(if wall { Crash::Obstacle } else { Crash::Ground });
                 return (V::ZERO, V::ZERO);
             }
             let h = ground.height(p.x, p.y + 1.5, p.z).unwrap_or(p.y + 0.3);
@@ -1435,5 +1446,62 @@ mod tests {
             sim.step(&ctl, &mut ground, 0.01);
         }
         assert!(sim.crashed.is_some());
+    }
+
+    /// Ground with a one-block step at `z` = 40 (and, if `wall`, a cliff at `z` = 200).
+    struct Steps {
+        wall: bool,
+    }
+
+    impl Ground for Steps {
+        fn height(&mut self, _x: f64, y: f64, z: f64) -> Option<f64> {
+            let top = if self.wall && z >= 200.0 { 120.0 } else if z >= 40.0 { 65.0 } else { 64.0 };
+            (y >= top - 4.0).then_some(top)
+        }
+
+        fn solid(&mut self, _x: f64, y: f64, z: f64) -> bool {
+            let top = if self.wall && z >= 200.0 { 120.0 } else if z >= 40.0 { 65.0 } else { 64.0 };
+            y < top
+        }
+    }
+
+    #[test]
+    fn rolling_over_a_step_and_a_tail_strike_are_not_crashes() {
+        for kind in 0..COUNT {
+            let spec = &specs()[kind];
+            let wheel = spec.gear[1].y;
+            let mut sim = Sim::new(kind, v(0.0, 64.0 - wheel + 0.05, 0.0), Q::IDENTITY, 0.0);
+            sim.vel = v(0.0, 0.0, 30.0);
+            let mut ground = Steps { wall: false };
+            let ctl = Controls { throttle: 0.3, ..Default::default() };
+            for _ in 0..300 {
+                sim.step(&ctl, &mut ground, 0.01);
+            }
+            assert!(sim.crashed.is_none(), "{} blew up on a step: {:?}", spec.name, sim.crashed);
+            // the tail dragged on the runway while rotating hard
+            let mut sim = Sim::new(kind, v(0.0, 64.0 - wheel + 0.05, 0.0), Q::axis_angle(v(1.0, 0.0, 0.0), -0.35), 0.0);
+            sim.vel = v(0.0, -1.0, 60.0);
+            let mut ground = Flat(64.0);
+            for _ in 0..100 {
+                sim.step(&ctl, &mut ground, 0.01);
+            }
+            assert!(sim.crashed.is_none(), "{} blew up on a tail strike: {:?}", spec.name, sim.crashed);
+        }
+    }
+
+    #[test]
+    fn flying_into_a_cliff_is_a_crash() {
+        let mut sim = Sim::new(FALCON, v(0.0, 100.0, 0.0), Q::IDENTITY, 80.0);
+        sim.gear = 0.0;
+        sim.ctl.gear_down = false;
+        let mut ground = Steps { wall: true };
+        let ctl = Controls { throttle: 0.8, ..Default::default() };
+        for _ in 0..400 {
+            sim.step(&ctl, &mut ground, 0.01);
+            if sim.crashed.is_some() {
+                break;
+            }
+        }
+        assert_eq!(sim.crashed, Some(Crash::Obstacle));
     }
 }

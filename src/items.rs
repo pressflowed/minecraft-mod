@@ -12,7 +12,7 @@ use crate::flight::{self, V3};
 use crate::net::Act;
 use crate::weather::{self, EVENTS};
 use crate::ID;
-use horizon_client::mod_api::{Host, NativeCamera};
+use crate::host::{Host, NativeCamera};
 use std::time::{Duration, Instant};
 
 pub const SCEPTER: &str = "minecraft:breeze_rod";
@@ -102,7 +102,7 @@ impl Items {
     }
 }
 
-fn holding(host: &dyn Host) -> Holding {
+fn holding(host: &Host<'_>) -> Holding {
     match host.held() {
         Some((item, _, _)) if item == SCEPTER => Holding::Scepter,
         Some((item, _, _)) if item == GUN => Holding::Gun,
@@ -115,7 +115,7 @@ fn toast(c: &mut Client, text: impl Into<String>) {
 }
 
 /// Each tick: what is held, and the storms' sounds and flashes.
-pub fn tick(host: &mut dyn Host, camera: &NativeCamera) {
+pub fn tick(host: &mut Host<'_>, camera: &NativeCamera) {
     let now_holding = holding(host);
     let (let_go, storms, ticks) = {
         let mut c = client::state();
@@ -142,7 +142,7 @@ pub fn tick(host: &mut dyn Host, camera: &NativeCamera) {
 }
 
 /// A storm's ongoing sounds, and its flashes of lightning.
-fn ambience(host: &mut dyn Host, camera: &NativeCamera, s: &Storm, ticks: u64) {
+fn ambience(host: &mut Host<'_>, camera: &NativeCamera, s: &Storm, ticks: u64) {
     let at = s.now_at();
     let age = s.age();
     let eye = camera.position;
@@ -262,7 +262,7 @@ fn ambience(host: &mut dyn Host, camera: &NativeCamera, s: &Storm, ticks: u64) {
 }
 
 /// Each frame: where the scepter points, and which cube the gun would pick.
-pub fn frame(host: &mut dyn Host) {
+pub fn frame(host: &mut Host<'_>) {
     let (holding, gripping, size) = {
         let c = client::state();
         (c.items.holding, c.items.gripping.is_some(), c.items.size)
@@ -284,7 +284,7 @@ pub fn frame(host: &mut dyn Host) {
 
 /// The lowest corner of the cube `size` blocks across that the gun picks at `hit`: the block hit
 /// and the ones behind it, centred across the face.
-fn cube(hit: &horizon_client::mod_api::NativeHit, size: u8) -> V3 {
+fn cube(hit: &crate::host::NativeHit, size: u8) -> V3 {
     let n = f64::from(size);
     let block = [f64::from(hit.block_x), f64::from(hit.block_y), f64::from(hit.block_z)];
     // which face: the axis where the hit point sits on the block's edge
@@ -312,7 +312,7 @@ fn cube(hit: &horizon_client::mod_api::NativeHit, size: u8) -> V3 {
 }
 
 /// The keys while an item is held; true when the key is the item's.
-pub fn key(host: &mut dyn Host, key: &str, pressed: bool) -> bool {
+pub fn key(host: &mut Host<'_>, key: &str, pressed: bool) -> bool {
     let held = holding(host);
     let flight_key = host.mod_key(ID, POWERS[FLIGHT].key, POWERS[FLIGHT].default);
     let picker = client::state().items.picker;
@@ -362,7 +362,7 @@ pub fn key(host: &mut dyn Host, key: &str, pressed: bool) -> bool {
 }
 
 /// The mouse wheel while the picker is open; true when it chose.
-pub fn scroll(host: &mut dyn Host, dy: f64) -> bool {
+pub fn scroll(host: &mut Host<'_>, dy: f64) -> bool {
     if !client::state().items.picker || dy == 0.0 {
         return false;
     }
@@ -370,7 +370,7 @@ pub fn scroll(host: &mut dyn Host, dy: f64) -> bool {
     true
 }
 
-fn choose(host: &mut dyn Host, step: usize) {
+fn choose(host: &mut Host<'_>, step: usize) {
     let selected = {
         let mut c = client::state();
         c.items.selected = (c.items.selected + step) % EVENTS.len();
@@ -393,7 +393,7 @@ pub fn claims(button: i32) -> bool {
 
 // ---- the Storm Scepter --------------------------------------------------------------------------
 
-fn summon(host: &mut dyn Host) {
+fn summon(host: &mut Host<'_>) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -443,7 +443,7 @@ fn summon(host: &mut dyn Host) {
 }
 
 /// What an event looks and sounds like when it starts.
-fn begin(host: &mut dyn Host, s: &Storm, eye: V3, distance: f64) {
+fn begin(host: &mut Host<'_>, s: &Storm, eye: V3, distance: f64) {
     let at = s.at;
     let up = [0.0, 1.0, 0.0];
     let delay = (distance / 17.0) as i32;
@@ -637,7 +637,7 @@ pub fn atmosphere(c: &Client, eye: V3) -> [f32; 4] {
 
 // ---- the Gravity Gun ----------------------------------------------------------------------------
 
-fn gun_right(host: &mut dyn Host) {
+fn gun_right(host: &mut Host<'_>) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -659,7 +659,7 @@ fn gun_right(host: &mut dyn Host) {
     client::sound(host, "minecraft:block.beacon.power_select", camera.position, 0.5, 1.0 + 0.2 * f32::from(size.trailing_zeros() as u8), 0);
 }
 
-fn gun_left(host: &mut dyn Host) {
+fn gun_left(host: &mut Host<'_>) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -702,7 +702,7 @@ fn gun_left(host: &mut dyn Host) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_client::mod_api::NativeHit;
+    use crate::host::NativeHit;
 
     fn hit(block: [i32; 3], at: [f64; 3]) -> NativeHit {
         NativeHit { block_x: block[0], block_y: block[1], block_z: block[2], x: at[0], y: at[1], z: at[2], block: "minecraft:stone".into() }

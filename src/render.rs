@@ -1,4 +1,5 @@
-//! Two GPU passes once the world is drawn, before the hand and the HUD:
+//! What the two effect passes draw each frame (the GPU work itself is in the `draw` mixin,
+//! `src/mixins/draw.rs`, which runs once the world is drawn, before the hand and the HUD):
 //!
 //! 1. The lens pass, only while something bends light: it copies the picture and draws it back
 //!    bent around black holes (with the event horizon black), rippled by shock waves and
@@ -9,10 +10,8 @@
 use crate::client::{self, Kind};
 use crate::hud::beam_color;
 use crate::items::Holding;
-use crate::shader;
+
 use crate::weather;
-use horizon_client::mod_api::{RenderHooks, RenderNeedsEvent, WorldDrawnEvent, wgpu};
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -24,158 +23,6 @@ pub const MAX_TRAIL: usize = 96;
 /// trails' points.
 pub const UNIFORM_SIZE: usize = 64 * 2 + 16 * 5 + MAX_EFFECTS * 64 + MAX_TRAIL * 16;
 
-pub struct Renderer {
-    started: Instant,
-    gpu: Mutex<Option<Gpu>>,
-    jets: Mutex<Option<crate::jet_gpu::JetGpu>>,
-}
-
-struct Gpu {
-    format: wgpu::TextureFormat,
-    layout: wgpu::BindGroupLayout,
-    glow: wgpu::RenderPipeline,
-    lens: wgpu::RenderPipeline,
-    uniform: wgpu::Buffer,
-    sampler: wgpu::Sampler,
-    /// The copy of the picture the lens pass reads, and its size.
-    scene: Option<(wgpu::Texture, wgpu::TextureView, [u32; 2])>,
-}
-
-impl Renderer {
-    pub fn new() -> Self {
-        Self { started: Instant::now(), gpu: Mutex::new(None), jets: Mutex::new(None) }
-    }
-}
-
-impl Gpu {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let fragment = |binding, ty| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty,
-            count: None,
-        };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("superpowers"),
-            entries: &[
-                fragment(
-                    0,
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                ),
-                // The Depth32Float depth as an unfilterable float texture: OpenGL can't build a
-                // pass that reads a texture_depth_2d (as Orbital Laser's post pass binds it).
-                fragment(
-                    1,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                fragment(
-                    2,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                fragment(3, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("superpowers"),
-            bind_group_layouts: &[Some(&layout)],
-            ..Default::default()
-        });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("superpowers"),
-            source: wgpu::ShaderSource::Wgsl(shader::WGSL.into()),
-        });
-        let pipeline = |entry: &str, blend: Option<wgpu::BlendState>| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("superpowers"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        // Light adds to the picture; the picture's alpha stays as it is.
-        let additive = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::Zero,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-        };
-        let glow = pipeline("fs_glow", Some(additive));
-        let lens = pipeline("fs_lens", None);
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("superpowers frame"),
-            size: UNIFORM_SIZE as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("superpowers scene"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            ..Default::default()
-        });
-        Self { format, layout, glow, lens, uniform, sampler, scene: None }
-    }
-
-    /// The copy of the picture, made for this size when it changes.
-    fn scene(&mut self, device: &wgpu::Device, size: [u32; 2]) -> &(wgpu::Texture, wgpu::TextureView, [u32; 2]) {
-        if self.scene.as_ref().map(|s| s.2) != Some(size) {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("superpowers scene"),
-                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&Default::default());
-            self.scene = Some((texture, view, size));
-        }
-        self.scene.as_ref().expect("made above")
-    }
-}
-
-/// `m` (column-major) times `v`.
 fn mul(m: &[f32; 16], v: [f32; 4]) -> [f32; 4] {
     std::array::from_fn(|row| (0..4).map(|col| m[col * 4 + row] * v[col]).sum())
 }
@@ -437,88 +284,6 @@ pub fn night(day_time: i64) -> f32 {
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-impl RenderHooks for Renderer {
-    /// The passes read the world's depth: what is sky, and where surfaces are.
-    fn render_needs(&self, event: &mut RenderNeedsEvent<'_>) {
-        event.needs.world_depth = true;
-    }
-
-    fn world_drawn(&self, event: &mut WorldDrawnEvent) {
-        let world = &mut *event.world;
-        if world.size[0] == 0 || world.size[1] == 0 || world.depth_size[0] == 0 || world.depth_size[1] == 0 {
-            return;
-        }
-        let inv = world.view_proj.inverse().to_cols_array();
-        let view_proj = world.view_proj.to_cols_array();
-        let camera = [world.camera.x, world.camera.y, world.camera.z];
-        let seconds = (self.started.elapsed().as_secs_f64() % 3600.0) as f32;
-        let packed = pack(seconds, world.size, world.depth_size, camera, view_proj, inv);
-        let jets = crate::jet::gpu(view_proj, world.size, world.depth_size, camera, seconds);
-        if !packed.glow && !packed.lens && jets.is_none() {
-            return;
-        }
-        let mut gpu = self.gpu.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if gpu.as_ref().map(|g| g.format) != Some(world.color_format) {
-            *gpu = Some(Gpu::new(world.device, world.color_format));
-        }
-        let Some(gpu) = gpu.as_mut() else {
-            return;
-        };
-        world.queue.write_buffer(&gpu.uniform, 0, &packed.bytes);
-        let size = world.size;
-        gpu.scene(world.device, size);
-        let (scene_texture, scene_view, _) = gpu.scene.as_ref().expect("made above");
-        if packed.lens {
-            world.encoder.copy_texture_to_texture(
-                world.color.as_image_copy(),
-                scene_texture.as_image_copy(),
-                wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-            );
-        }
-        let group = world.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("superpowers"),
-            layout: &gpu.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(world.depth) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(scene_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
-            ],
-        });
-        // the lens pass, then the jets over it (so storms behind them don't cover them), then light
-        let passes = [(packed.lens, &gpu.lens, false), (packed.glow, &gpu.glow, true)];
-        for (run, pipeline, light) in passes {
-            if light {
-                if let Some((frame, draws)) = &jets {
-                    let mut jet_gpu = self.jets.lock().unwrap_or_else(|p| p.into_inner());
-                    if jet_gpu.as_ref().map(|g| g.format()) != Some(world.color_format) {
-                        *jet_gpu = Some(crate::jet_gpu::JetGpu::new(world.device, world.color_format));
-                    }
-                    if let Some(jg) = jet_gpu.as_mut() {
-                        jg.render(world.device, world.queue, world.encoder, world.color_view, world.depth, world.size, frame, draws);
-                    }
-                }
-            }
-            if !run {
-                continue;
-            }
-            let mut pass = world.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("superpowers"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: world.color_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-    }
 }
 
 #[cfg(test)]

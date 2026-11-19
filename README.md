@@ -4,14 +4,13 @@ A native mod for [Horizon](https://github.com/horizon-rust/horizon), the Rust re
 26.3. It adds twelve super powers, five of them mega powers, plus elytra-style **Superflight** with barrel rolls and
 loops. On top of that there's the **CATACLYSM**, a crater 40 chunks across, two items (the **Storm Scepter**, which
 calls down 13 disasters, and a **Gravity Gun**), **five fully simulated jets** with cockpits and weapons, a keybind
-panel and aurora night skies. Built on Horizon commit `e57b1d3`, the build Orbital Laser pins, so the two run in one game, and for
-launchers that read native mods as `horizon-mixin.toml` bundles.
+panel and aurora night skies. Made for **Horizon Nightly 2026-11-19** (`f00125f`) and the new launcher, which reads
+native mods from `horizon-mod.toml`.
 
 ![Every power, drawn by the mod's own shaders](docs/preview-powers.png)
 
-*Drawn on a software GPU over a stand-in scene (the grass and stone pillars are fake) by this mod's effects as
-they were first built for the newer mod API. This build draws the same effects with its own GPU pass, so the
-look is close but not identical. In the game they draw over your world.*
+*Drawn on a software GPU over a stand-in scene (the grass and stone pillars are fake) by this mod's effects. In
+the game they draw over your world.*
 
 ## Powers
 
@@ -122,8 +121,13 @@ out of the forces.
 altitude, heading tape, g, Mach, angle of attack, ammunition, lock, stall and pull-up warnings), three working
 screens (attitude, radar, engines and weapons), and a stick and throttle that move. Afterburners show shock
 diamonds; there's heat shimmer behind the engines, vapour from the wingtips in hard turns, contrails up high,
-and a vapour cone and a sonic boom through the speed of sound. Hitting the ground or a mountain hard is a crash:
-the jet explodes and you're thrown clear, unhurt.
+and a vapour cone and a sonic boom through the speed of sound.
+
+Only a real impact is a crash: coming down faster than 10 blocks a second (13 on the wheels), or flying into a
+wall or a mountainside at speed. Then the jet explodes and you're thrown clear, unhurt. A tail strike on takeoff,
+a belly landing, or rolling over a bump or a step at speed only scrapes. The camera rides the simulated jet
+itself, every frame, so the view is smooth and never fights the player's body; if your body falls far behind
+the seat, the server puts it back.
 
 ## Superflight
 
@@ -138,10 +142,13 @@ the jet explodes and you're thrown clear, unhurt.
 | Space / Sneak | Climb and sink. |
 | R | Land (stop flying). |
 
-You take no fall damage while flying, nor for ten seconds after. The view widens with speed, and speed lines stream
-past when you boost. The camera rolls and loops all the way round: the mod carries one small patch to the game (the
-`[[injection]]` in `horizon-mixin.toml`), because the game otherwise limits a mod's camera turn to 10 degrees. The
-jets' direct mode uses the same patch to fix the view to the cockpit.
+Flight has momentum: your path swings round to where you look instead of snapping to it, banks into the turn it
+makes, and speeds up and slows down smoothly. Rolls and loops ease in and out, and every turn of the camera is drawn
+between game ticks, so it stays smooth at any frame rate. You take no fall damage while flying, nor for ten seconds
+after. The view widens with speed, and speed lines stream past when you boost. The camera rolls and loops all the
+way round: the game otherwise limits a mod's camera turn to 10 degrees, so the mod carries a small patch for it
+(the `free-shake` mixin in `horizon-mod.toml`). The jets' direct mode uses the same patch to fix the view to the
+cockpit.
 
 > [!WARNING]
 > **The powers change the world for good.** Use a throwaway world or back yours up. They never break bedrock or the
@@ -152,20 +159,30 @@ jets' direct mode uses the same patch to fix the view to the cockpit.
 
 ## Install
 
-1. In the launcher's **Mods** page, remove any older **superpowers**.
-2. Choose **Add from GitHub** and paste a commit link (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`).
+The mod pins **Horizon Nightly 2026-11-19** (`f00125f`): its mixins patch the game, so the launcher builds it only
+for an instance on that Nightly.
+
+1. Make (or switch) the instance to **Nightly 2026-11-19**.
+2. In the launcher's **Mods** page, remove any older **superpowers**.
+3. Choose **Add from GitHub** and paste a commit link (`https://github.com/pressflowed/minecraft-mod/commit/<sha>`).
    The repository must be public.
-3. Press **Build**, then **I trust these mods: build**. Native mods run unsandboxed; all of this one's code is in
-   [`api/src`](api/src).
-4. Play. Press **H** for the panel. Type `/time set midnight` to see the aurora.
+4. Press **Build**, then **I trust these mods: build**. Native mods run unsandboxed; all of this one's code is in
+   [`src`](src).
+5. Play. Press **H** for the panel. Type `/superpowers give` for the Storm Scepter and the Gravity Gun, and
+   `/time set midnight` to see the aurora.
+
+On a newer Nightly, change `horizon` in `horizon-mod.toml` to its commit (and `mixins` to the one it pins).
 
 ## How it was checked
 
-- The code type-checks against Horizon's own source at commit `e57b1d3`, the build it is made for, and its
-  27 unit tests pass: among them, every jet holds level flight, rolls and pulls the right way, turns to where you
-  look, takes off from the ground and crashes when it should.
-- The shaders pass wgpu's validator and translate for Vulkan, Metal and DirectX. The storm visuals were drawn on a
-  software GPU over a stand-in scene to tune them.
+- The mod crate builds against Horizon's own SDK at `f00125f`, and its 30 unit tests pass: among them, every jet
+  holds level flight, rolls and pulls the right way, turns to where you look and takes off; rolling over a step or
+  a tail strike only scrapes, while a dive into the ground or a cliff is a crash; and Superflight's rolls and
+  loops move smoothly from frame to frame.
+- The `draw` mixin's helper was compiled inside a stand-in for its target (`horizon_mod_render::render::world_drawn`,
+  with the same imports and wgpu 30) and run on a software Vulkan GPU for several frames with wgpu's validation on:
+  aurora, effects and every jet model drew with no errors.
+- The shaders pass wgpu's validator and translate for Vulkan, Metal and DirectX.
 - It hasn't run inside the game yet. If the build fails, the Mods page and `native/build.log` say why. If something
   looks or feels wrong in play, it's quick to tune.
 
@@ -173,11 +190,16 @@ jets' direct mode uses the same patch to fix the view to the cockpit.
 
 | File | What |
 | --- | --- |
-| `horizon-mixin.toml` | The bundle: the pinned build, the `[api]` crate, and the camera patch. |
-| `mixins/unbounded_shake.rs` | The camera patch. |
-| `api/src/lib.rs` | The hooks. |
-| `api/src/client.rs` | Every power's key and cooldown; effects, Superflight, camera feel and sounds. |
-| `api/src/flight.rs` | Vector maths for flight. |
-| `api/src/server.rs` | What each power does to the world, in each level's tick. |
-| `api/src/render.rs`, `api/src/shader.rs` | The GPU passes and their WGSL. |
-| `api/src/hud.rs` | The panel, the flight read-out and the Cataclysm's charge. |
+| `horizon-mod.toml` | The manifest: the pinned build and the three mixins. |
+| `src/mixins/shake.rs` | Frees the camera's roll and loop (`free-shake`). |
+| `src/mixins/draw.rs` | Draws the effects and the jets on the GPU once the world is drawn (`draw`). |
+| `src/mixins/needs.rs` | Keeps the world's depth for it (`needs`). |
+| `src/lib.rs` | The hooks. |
+| `src/host.rs` | The game, as the rest of the mod calls it. |
+| `src/client.rs` | Every power's key and cooldown; effects, Superflight, camera feel and sounds. |
+| `src/flight.rs` | Vector maths for flight. |
+| `src/server.rs` | What each power does to the world, in each level's tick. |
+| `src/render.rs`, `src/shader.rs`, `src/gfx.rs` | What the effect passes draw, their WGSL, and what the `draw` mixin asks each frame. |
+| `src/hud.rs` | The panel, the read-outs and the pickers. |
+| `src/items.rs`, `src/storms.rs`, `src/weather.rs` | The Storm Scepter and the Gravity Gun. |
+| `src/jet_sim.rs`, `src/jet_mesh.rs`, `src/jet_shader.rs`, `src/jet.rs`, `src/jet_server.rs`, `src/jet_net.rs` | The jets: flight model, models, drawing, flying, weapons, messages. |

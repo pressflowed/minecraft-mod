@@ -4,7 +4,7 @@
 
 use crate::jet_net::{self, Down, Shot, Up};
 use crate::server;
-use horizon_client::mod_api::Host;
+use crate::host::Host;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
@@ -82,13 +82,14 @@ fn norm(a: [f64; 3]) -> [f64; 3] {
 }
 
 /// What a player's window sends about their jet.
-pub fn message(host: &mut dyn Host, player: u128, data: &[u8]) {
+pub fn message(host: &mut Host<'_>, player: u128, data: &[u8]) {
     let Some(up) = Up::decode(data) else {
         return;
     };
     let players = host.server_players();
     let me = players.iter().find(|p| p.uuid == player);
-    let near = |at: [f64; 3], dimension: &str| me.is_some_and(|p| p.dimension == dimension && len(sub(p.position, at)) < 48.0);
+    // a fast jet is well ahead of where the server last had its pilot
+    let near = |at: [f64; 3], dimension: &str| me.is_some_and(|p| p.dimension == dimension && len(sub(p.position, at)) < 160.0);
     let tick = server::now();
     match up {
         Up::Leave => with(|s| {
@@ -97,6 +98,11 @@ pub fn message(host: &mut dyn Host, player: u128, data: &[u8]) {
         Up::Fly { dimension, eye, vel: _, fwd } => {
             if !near(eye, &dimension) {
                 return;
+            }
+            // the pilot's body caught on something the jet flew past: back in the seat
+            if let Some(me) = me.filter(|p| len(sub([p.position[0], p.position[1] + 1.62, p.position[2]], eye)) > 64.0) {
+                let line = format!("execute in {dimension} run tp {} {:.2} {:.2} {:.2}", me.name, eye[0], eye[1] - 1.62, eye[2]);
+                host.run_command(&line);
             }
             with(|s| {
                 let p = s.pilots.entry(player).or_insert(Pilot { dimension: dimension.clone(), eye, fwd, seen: tick, lock: None, locked_for: 0 });
@@ -142,7 +148,7 @@ pub fn message(host: &mut dyn Host, player: u128, data: &[u8]) {
     }
 }
 
-fn send(host: &mut dyn Host, player: u128, down: &Down) {
+fn send(host: &mut Host<'_>, player: u128, down: &Down) {
     let _ = host.net_send_to_player(player, jet_net::CHANNEL, &down.encode());
 }
 
@@ -201,7 +207,7 @@ fn lockable(kind: &str) -> bool {
 }
 
 /// Each tick of level `dimension`.
-pub fn level_tick(host: &mut dyn Host, dimension: &str) {
+pub fn level_tick(host: &mut Host<'_>, dimension: &str) {
     let tick = server::now();
     let (pilots, guns, any) = with(|s| {
         s.pilots.retain(|_, p| tick.saturating_sub(p.seen) < 60);
@@ -271,7 +277,7 @@ pub fn level_tick(host: &mut dyn Host, dimension: &str) {
 }
 
 /// One cannon round: the first solid block along its line, or the first mob near it.
-fn shoot(host: &mut dyn Host, dimension: &str, from: [f64; 3], dir: [f64; 3], mobs: &[(u32, [f64; 3])]) {
+fn shoot(host: &mut Host<'_>, dimension: &str, from: [f64; 3], dir: [f64; 3], mobs: &[(u32, [f64; 3])]) {
     let mut s = 1.0;
     let mut hit = None;
     while s < 380.0 {
@@ -307,7 +313,7 @@ fn shoot(host: &mut dyn Host, dimension: &str, from: [f64; 3], dir: [f64; 3], mo
     }
 }
 
-fn step_ordnance(host: &mut dyn Host, dimension: &str, mobs: &[(u32, [f64; 3])], pilots: &[(u128, [f64; 3], [f64; 3])]) {
+fn step_ordnance(host: &mut Host<'_>, dimension: &str, mobs: &[(u32, [f64; 3])], pilots: &[(u128, [f64; 3], [f64; 3])]) {
     let dt = 0.05;
     let mut mine: Vec<Ordnance> = with(|s| {
         let (here, rest): (Vec<Ordnance>, Vec<Ordnance>) = std::mem::take(&mut s.ordnance).into_iter().partition(|o| o.dimension == dimension);
@@ -379,7 +385,7 @@ fn step_ordnance(host: &mut dyn Host, dimension: &str, mobs: &[(u32, [f64; 3])],
 }
 
 /// A missile's or bomb's blast: a crater, and everything near hurt and thrown.
-fn explode(host: &mut dyn Host, dimension: &str, at: [f64; 3], radius: f64) {
+fn explode(host: &mut Host<'_>, dimension: &str, at: [f64; 3], radius: f64) {
     let mut columns = HashMap::new();
     server::carve_sphere(&mut columns, at, radius);
     server::carve(host, dimension, &columns);

@@ -4,12 +4,13 @@
 //! instruments, the heads-up display and the screens are fed.
 
 use crate::client::{self, Kind};
-use crate::jet_gpu::{self, Draw};
+use crate::flight;
+use crate::gfx::{self, Draw};
 use crate::jet_mesh;
 use crate::jet_net::{self, Down, Shot, Up};
 use crate::jet_sim::{self, Crash, Fcs, Ground, Mode, Pilot, Q, Sim, V, part, specs, v};
 use crate::ID;
-use horizon_client::mod_api::{Host, NativeCamera, NativeShake};
+use crate::host::{Host, NativeCamera, NativeShake};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
@@ -46,8 +47,6 @@ pub struct Jet {
     pub throttle: f64,
     inp: Inputs,
     frozen: Option<V>,
-    /// The ticks the player has lagged far behind the seat.
-    off: u32,
     moved: V,
     pub rounds: u32,
     pub missiles: u32,
@@ -84,6 +83,7 @@ pub struct Jets {
     held: Option<u32>,
     detached: Option<Instant>,
     pub chase: f32,
+    third: bool,
     partial: f32,
     look: V,
     camera: [f64; 3],
@@ -102,6 +102,7 @@ static JETS: Mutex<Jets> = Mutex::new(Jets {
     held: None,
     detached: None,
     chase: 4.0,
+    third: false,
     partial: 0.0,
     look: V { x: 0.0, y: 0.0, z: 1.0 },
     camera: [0.0; 3],
@@ -117,12 +118,12 @@ pub fn state() -> MutexGuard<'static, Jets> {
     JETS.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Whether the camera is behind the player (F5), as the camera-distance hook last said.
+/// Whether the camera is behind the player (F5), as the camera hook last said.
 fn third_person(j: &Jets) -> bool {
-    j.detached.is_some_and(|t| t.elapsed().as_millis() < 200)
+    j.third
 }
 
-fn send(host: &mut dyn Host, up: Up) {
+fn send(host: &mut Host<'_>, up: Up) {
     let _ = host.net_send_to_server(jet_net::CHANNEL, &up.encode());
 }
 
@@ -133,13 +134,13 @@ fn vec(a: [f64; 3]) -> V {
 // ---- the world under the jet ------------------------------------------------------------------------
 
 /// The terrain as the flight model asks about it, read from the window's copy of the world.
-struct WorldGround<'a> {
-    host: &'a dyn Host,
+struct WorldGround<'a, 'h> {
+    host: &'a Host<'h>,
     cache: HashMap<[i32; 3], (Vec<[f64; 6]>, bool)>,
 }
 
-impl<'a> WorldGround<'a> {
-    fn new(host: &'a dyn Host) -> Self {
+impl<'a, 'h> WorldGround<'a, 'h> {
+    fn new(host: &'a Host<'h>) -> Self {
         Self { host, cache: HashMap::new() }
     }
 
@@ -169,7 +170,7 @@ impl<'a> WorldGround<'a> {
     }
 }
 
-impl Ground for WorldGround<'_> {
+impl Ground for WorldGround<'_, '_> {
     fn height(&mut self, x: f64, y: f64, z: f64) -> Option<f64> {
         let (bx, bz) = (x.floor() as i32, z.floor() as i32);
         let top = y.floor() as i32;
@@ -196,7 +197,7 @@ impl Ground for WorldGround<'_> {
 // ---- keys ---------------------------------------------------------------------------------------
 
 /// The keys: the jet key always, the rest while flying. True when the key was the jets'.
-pub fn key(host: &mut dyn Host, key: &str, pressed: bool) -> bool {
+pub fn key(host: &mut Host<'_>, key: &str, pressed: bool) -> bool {
     let bound = |k: (&str, &str, &str)| host.mod_key(ID, k.0, k.2);
     let (jet_key, cobra, mode, assist) = (bound(JET_KEY), bound(COBRA_KEY), bound(MODE_KEY), bound(ASSIST_KEY));
     if key == jet_key {
@@ -287,7 +288,7 @@ pub fn key(host: &mut dyn Host, key: &str, pressed: bool) -> bool {
 }
 
 /// The mouse wheel chooses in the picker.
-pub fn scroll(host: &mut dyn Host, dy: f64) -> bool {
+pub fn scroll(host: &mut Host<'_>, dy: f64) -> bool {
     if !state().picker || dy == 0.0 {
         return false;
     }
@@ -295,7 +296,7 @@ pub fn scroll(host: &mut dyn Host, dy: f64) -> bool {
     true
 }
 
-fn choose(host: &mut dyn Host, step: usize) {
+fn choose(host: &mut Host<'_>, step: usize) {
     let selected = {
         let mut j = state();
         j.selected = (j.selected + step) % jet_sim::COUNT;
@@ -336,7 +337,7 @@ pub fn claims(_button: i32) -> bool {
 
 // ---- getting in and out ------------------------------------------------------------------------------
 
-fn toggle(host: &mut dyn Host) {
+fn toggle(host: &mut Host<'_>) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -348,7 +349,7 @@ fn toggle(host: &mut dyn Host) {
     board(host, &camera);
 }
 
-fn board(host: &mut dyn Host, camera: &NativeCamera) {
+fn board(host: &mut Host<'_>, camera: &NativeCamera) {
     let (kind, third, chase) = {
         let j = state();
         (j.selected, third_person(&j), j.chase)
@@ -391,7 +392,6 @@ fn board(host: &mut dyn Host, camera: &NativeCamera) {
         assist: true,
         inp: Inputs::default(),
         frozen: None,
-        off: 0,
         moved: V::ZERO,
         rounds: if spec.guns { MAX_ROUNDS } else { 0 },
         missiles: u32::from(spec.missiles),
@@ -426,7 +426,7 @@ fn board(host: &mut dyn Host, camera: &NativeCamera) {
     client::sound(host, "minecraft:block.beacon.activate", eye.arr(), 0.8, 1.6, 4);
 }
 
-fn leave(host: &mut dyn Host, camera: &NativeCamera, jet: &Jet, crashed: bool) {
+fn leave(host: &mut Host<'_>, camera: &NativeCamera, jet: &Jet, crashed: bool) {
     send(host, Up::Leave);
     client::protect_falls(20.0);
     let at = jet.sim.pos;
@@ -456,7 +456,7 @@ fn leave(host: &mut dyn Host, camera: &NativeCamera, jet: &Jet, crashed: bool) {
 
 // ---- each tick --------------------------------------------------------------------------------------
 
-pub fn tick(host: &mut dyn Host, camera: &NativeCamera) {
+pub fn tick(host: &mut Host<'_>, camera: &NativeCamera) {
     {
         let mut j = state();
         j.ticks += 1;
@@ -515,7 +515,7 @@ enum Event {
 }
 
 impl Event {
-    fn run(self, host: &mut dyn Host) {
+    fn run(self, host: &mut Host<'_>) {
         match self {
             Event::Effect(e) => client::state().push_effect(e),
             Event::Sound(name, at, volume, pitch, delay) => client::sound(host, name, at, volume, pitch, delay),
@@ -524,7 +524,7 @@ impl Event {
     }
 }
 
-fn fly_tick(host: &mut dyn Host, camera: &NativeCamera, jet: &mut Jet, look: V, you: Option<(V, u64)>, ticks: u64, events: &mut Vec<Event>) -> Option<Crash> {
+fn fly_tick(host: &mut Host<'_>, camera: &NativeCamera, jet: &mut Jet, look: V, you: Option<(V, u64)>, ticks: u64, events: &mut Vec<Event>) -> Option<Crash> {
     jet.ticks += 1;
     jet.prev = (jet.sim.pos, jet.sim.rot);
     // the throttle stays where it is set
@@ -590,15 +590,8 @@ fn fly_tick(host: &mut dyn Host, camera: &NativeCamera, jet: &mut Jet, look: V, 
     let push = want - after;
     jet.moved = want;
     host.push_player([push.x as f32, push.y as f32, push.z as f32]);
-    // the player stuck behind (a wall the jet went through): a crash
-    if you.is_some_and(|(p, at)| ticks.saturating_sub(at) < 5 && (p - (sim.eye() - v(0.0, eye_height, 0.0))).len() > 12.0) {
-        jet.off += 1;
-        if jet.off > 4 {
-            return Some(Crash::Obstacle);
-        }
-    } else {
-        jet.off = 0;
-    }
+    // The camera rides the jet itself (`camera_pose`), so the player's body lagging behind the
+    // seat is never a crash: the server puts it back in the seat if it falls far behind.
     client::protect_falls(5.0);
     events.push(Event::Send(Up::Fly { dimension: camera.dimension.clone(), eye: sim.eye().arr(), vel: sim.vel.arr(), fwd: fwd.arr() }));
 
@@ -709,7 +702,7 @@ fn predict_bomb(pos: V, vel: V, ground: f64) -> Option<V> {
 
 // ---- weapons ----------------------------------------------------------------------------------------
 
-fn weapons(host: &mut dyn Host, camera: &NativeCamera, jet: &mut Jet, events: &mut Vec<Event>) {
+fn weapons(host: &mut Host<'_>, camera: &NativeCamera, jet: &mut Jet, events: &mut Vec<Event>) {
     let sim = &jet.sim;
     let spec = sim.spec();
     let _ = spec.about;
@@ -773,7 +766,7 @@ fn weapons(host: &mut dyn Host, camera: &NativeCamera, jet: &mut Jet, events: &m
 /// Tracers made this tick, handed to the jets' state once its lock is free.
 static PENDING: Mutex<Vec<Tracer>> = Mutex::new(Vec::new());
 
-fn fire_missile(host: &mut dyn Host) {
+fn fire_missile(host: &mut Host<'_>) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -808,7 +801,7 @@ fn fire_missile(host: &mut dyn Host) {
     client::sound(host, "minecraft:entity.blaze.shoot", from.arr(), 1.5, 0.5, 2);
 }
 
-fn drop_bomb(host: &mut dyn Host) {
+fn drop_bomb(host: &mut Host<'_>) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -842,7 +835,7 @@ fn drop_bomb(host: &mut dyn Host) {
 }
 
 /// What the server says.
-pub fn message(host: &mut dyn Host, data: &[u8]) {
+pub fn message(host: &mut Host<'_>, data: &[u8]) {
     let Some(down) = Down::decode(data) else {
         return;
     };
@@ -893,7 +886,7 @@ pub fn message(host: &mut dyn Host, data: &[u8]) {
 }
 
 /// Each frame: where the camera is and how far through the tick.
-pub fn frame(host: &mut dyn Host) {
+pub fn frame(host: &mut Host<'_>) {
     let Some(camera) = host.camera() else {
         return;
     };
@@ -919,6 +912,11 @@ pub fn camera_distance(distance: &mut f32) {
     if j.jet.is_some() || (j.chase - *distance).abs() > 0.05 {
         *distance = j.chase;
     }
+}
+
+/// How far through the tick this frame is.
+pub fn partial() -> f32 {
+    state().partial
 }
 
 /// The jet's pose this frame, between the last two ticks.
@@ -1001,15 +999,29 @@ pub fn hides_player() -> bool {
 
 // ---- drawing ----------------------------------------------------------------------------------------
 
-/// Where the jet's centre is, from the camera: in the cockpit the eyes are the camera; behind it,
-/// the eyes are the chase distance ahead of it.
-fn anchor(j: &Jets, rot: Q, spec: &jet_sim::Spec) -> V {
-    let eye = rot.rotate(spec.eye);
-    if third_person(j) {
-        j.look * f64::from(j.chase) - eye
-    } else {
-        eye * -1.0
-    }
+/// Where the jet's centre is this frame, from the camera at `camera`.
+fn anchor(at: V, camera: [f64; 3]) -> V {
+    at - vec(camera)
+}
+
+/// The camera this frame, riding the jet (between the last two ticks, so it is smooth at any
+/// frame rate): in the cockpit, at the pilot's eyes; behind, the chase distance back along the
+/// look. `pose` is the camera's position, yaw and pitch, changed in place. False with no jet.
+pub fn camera_pose(partial: f32, third: bool, pose: &mut ([f64; 3], f32, f32)) -> bool {
+    let mut j = state();
+    j.third = third;
+    j.partial = partial;
+    let Some((at, rot)) = self::pose(&j) else {
+        return false;
+    };
+    let Some(jet) = j.jet.as_ref() else {
+        return false;
+    };
+    let eye = at + rot.rotate(jet.sim.spec().eye);
+    let look = vec(flight::look(f64::from(pose.1), f64::from(pose.2)));
+    let camera = if third { eye - look * f64::from(j.chase) + V::UP * 0.6 } else { eye };
+    pose.0 = camera.arr();
+    true
 }
 
 /// The models to draw this frame, and the `Frame` uniform's bytes for them.
@@ -1017,7 +1029,7 @@ pub fn gpu(view_proj: [f32; 16], size: [u32; 2], depth_size: [u32; 2], camera: [
     let j = state();
     let now = Instant::now();
     let mut draws = Vec::new();
-    let mut frame: Vec<f32> = Vec::with_capacity(jet_gpu::FRAME_SIZE / 4);
+    let mut frame: Vec<f32> = Vec::with_capacity(gfx::JET_FRAME_SIZE / 4);
     frame.extend_from_slice(&view_proj);
     let day = client::DAY_TIME.load(std::sync::atomic::Ordering::Relaxed);
     let a = (day.rem_euclid(24_000) as f64 / 24_000.0) * std::f64::consts::TAU;
@@ -1030,11 +1042,11 @@ pub fn gpu(view_proj: [f32; 16], size: [u32; 2], depth_size: [u32; 2], camera: [
         crate::items::atmosphere(&c, camera)[1]
     };
     frame.extend_from_slice(&[seconds, if j.jet.is_some() && !third { 1.0 } else { 0.0 }, storm, 0.0]);
-    if let (Some(jet), Some((_, rot))) = (j.jet.as_ref(), pose(&j)) {
+    if let (Some(jet), Some((centre, rot))) = (j.jet.as_ref(), pose(&j)) {
         let sim = &jet.sim;
         let spec = sim.spec();
         let (left, up, fwd) = rot.basis();
-        let at = anchor(&j, rot, spec);
+        let at = anchor(centre, camera);
         let mut parts = sim.parts;
         // stores already fired are hidden
         let stores = jet_mesh::stores(spec);
@@ -1053,7 +1065,7 @@ pub fn gpu(view_proj: [f32; 16], size: [u32; 2], depth_size: [u32; 2], camera: [
         }
         draws.push(Draw {
             mesh: sim.kind,
-            model: jet_gpu::model_matrix(left.arr(), up.arr(), fwd.arr(), at.arr()),
+            model: gfx::model_matrix(left.arr(), up.arr(), fwd.arr(), at.arr()),
             parts,
             glow: (sim.engine * 0.7 + sim.burner * 1.5) as f32,
             hide_pilot: !third,
@@ -1099,8 +1111,8 @@ pub fn gpu(view_proj: [f32; 16], size: [u32; 2], depth_size: [u32; 2], camera: [
         let side = if f.y.abs() > 0.95 { v(1.0, 0.0, 0.0) } else { V::UP.cross(f).norm() };
         let u = f.cross(side);
         draws.push(Draw {
-            mesh: if shot.missile { jet_gpu::MISSILE } else { jet_gpu::BOMB },
-            model: jet_gpu::model_matrix(side.arr(), u.arr(), f.arr(), p.arr()),
+            mesh: if shot.missile { gfx::MISSILE } else { gfx::BOMB },
+            model: gfx::model_matrix(side.arr(), u.arr(), f.arr(), p.arr()),
             parts: [0.0; 32],
             glow: 0.0,
             hide_pilot: false,
@@ -1112,7 +1124,7 @@ pub fn gpu(view_proj: [f32; 16], size: [u32; 2], depth_size: [u32; 2], camera: [
         return None;
     }
     let bytes: Vec<u8> = frame.iter().flat_map(|f| f.to_le_bytes()).collect();
-    debug_assert_eq!(bytes.len(), jet_gpu::FRAME_SIZE);
+    debug_assert_eq!(bytes.len(), gfx::JET_FRAME_SIZE);
     Some((bytes, draws))
 }
 
@@ -1125,11 +1137,11 @@ pub fn effects(camera: [f64; 3]) -> (Vec<[[f32; 4]; 4]>, Vec<[f32; 4]>) {
     let mut fx = Vec::new();
     let mut trails = Vec::new();
     let third = third_person(&j);
-    if let (Some(jet), Some((_, rot))) = (j.jet.as_ref(), pose(&j)) {
+    if let (Some(jet), Some((centre, rot))) = (j.jet.as_ref(), pose(&j)) {
         let sim = &jet.sim;
         let spec = sim.spec();
         let (_, _, fwd) = rot.basis();
-        let at = anchor(&j, rot, spec);
+        let at = anchor(centre, camera);
         for e in &spec.engines {
             let nozzle = at + rot.rotate(*e - v(0.0, 0.0, 0.5));
             let exhaust = rot.rotate(v(sim.nozzle.1.sin(), sim.nozzle.0.sin(), -1.0).norm());

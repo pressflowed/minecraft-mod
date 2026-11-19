@@ -6,7 +6,8 @@ use crate::flight;
 use crate::net::{Act, Use};
 use crate::storms::{self, Storm};
 use crate::weather::EVENTS;
-use horizon_client::mod_api::{Compound, Host, NativeBlockEdit, NativeBlockRun, Tag};
+use crate::host::{Host, NativeBlockEdit, NativeBlockRun};
+use mod_api::{Compound, Tag};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
@@ -169,7 +170,7 @@ fn spacing(act: Act) -> u64 {
     }
 }
 
-pub fn message(host: &mut dyn Host, player: u128, data: &[u8]) {
+pub fn message(host: &mut Host<'_>, player: u128, data: &[u8]) {
     let Some(power) = Use::decode(data) else {
         return;
     };
@@ -218,7 +219,7 @@ pub fn message(host: &mut dyn Host, player: u128, data: &[u8]) {
 }
 
 /// `/superpowers give`: the Storm Scepter and the Gravity Gun, named and shining.
-fn give(host: &mut dyn Host, name: Option<&str>) {
+fn give(host: &mut Host<'_>, name: Option<&str>) {
     let Some(name) = name else {
         return;
     };
@@ -239,7 +240,7 @@ fn give(host: &mut dyn Host, name: Option<&str>) {
     }
 }
 
-pub fn level_tick(host: &mut dyn Host, dimension: &str) {
+pub fn level_tick(host: &mut Host<'_>, dimension: &str) {
     let (jobs, wells) = with(|s| {
         let now = s.tick;
         let mut jobs = Vec::new();
@@ -315,7 +316,7 @@ pub fn hold_distance(size: u8) -> f64 {
 
 /// Lifts the cube `size` blocks across from its lowest corner `at`: each block that can move
 /// becomes a falling block the gun holds.
-fn grab(host: &mut dyn Host, dimension: &str, player: u128, yaw: f32, at: [f64; 3], size: u8) {
+fn grab(host: &mut Host<'_>, dimension: &str, player: u128, yaw: f32, at: [f64; 3], size: u8) {
     if with(|s| s.grips.contains_key(&player)) || !matches!(size, 1 | 2 | 4 | 8) {
         return;
     }
@@ -369,7 +370,7 @@ fn grab(host: &mut dyn Host, dimension: &str, player: u128, yaw: f32, at: [f64; 
 }
 
 /// Each tick: every held cube is drawn to the point in front of its player's eyes.
-fn hold(host: &mut dyn Host, dimension: &str) {
+fn hold(host: &mut Host<'_>, dimension: &str) {
     let grips: Vec<(u128, Vec<(u32, [f64; 3])>, u8, f32)> = with(|s| {
         s.grips
             .iter()
@@ -474,7 +475,7 @@ fn drop_grip(player: u128) {
     }
 }
 
-fn run(host: &mut dyn Host, dimension: &str, job: Job) {
+fn run(host: &mut Host<'_>, dimension: &str, job: Job) {
     match job {
         Job::Grab { player, yaw, power } => grab(host, dimension, player, yaw, power.at, power.level),
         Job::Launch { blocks, dir } => {
@@ -558,7 +559,7 @@ fn run(host: &mut dyn Host, dimension: &str, job: Job) {
 }
 
 /// The Omega Beam, every other tick while it fires: a tunnel 4 blocks across, 200 long.
-fn omega(host: &mut dyn Host, dimension: &str, eye: [f64; 3], dir: [f64; 3]) {
+fn omega(host: &mut Host<'_>, dimension: &str, eye: [f64; 3], dir: [f64; 3]) {
     let mut columns = HashMap::new();
     let mut step = 3.0;
     while step < 200.0 {
@@ -575,12 +576,12 @@ fn omega(host: &mut dyn Host, dimension: &str, eye: [f64; 3], dir: [f64; 3]) {
 /// blocks deep at the centre, shallowing to the rim, cleared of everything up to `clear` blocks
 /// over the ground, floored with scorched stone. Unloaded chunks are left as they are.
 #[allow(clippy::too_many_arguments)]
-fn crater_band(host: &mut dyn Host, dimension: &str, at: [f64; 3], inner: f64, outer: f64, r: f64, deep: f64, clear: f64) {
+fn crater_band(host: &mut Host<'_>, dimension: &str, at: [f64; 3], inner: f64, outer: f64, r: f64, deep: f64, clear: f64) {
     let (cx, cz) = (at[0].floor() as i32, at[2].floor() as i32);
     let o = outer.ceil() as i32;
     let mut runs = Vec::new();
     let mut seed = (inner as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-    let surface = Some(horizon_client::mod_api::NativeHeightmap::WorldSurface);
+    let surface = Some(crate::host::NativeHeightmap::WorldSurface);
     for dx in -o..=o {
         for dz in -o..=o {
             let d = f64::from(dx * dx + dz * dz).sqrt();
@@ -626,7 +627,7 @@ fn crater_band(host: &mut dyn Host, dimension: &str, at: [f64; 3], inner: f64, o
 
 /// Super Punch (`k` 1) and Titan Fist (`k` 5): a cone that widens as it goes shatters, a share
 /// of it flies away as falling blocks, and the mobs in it are hurt and thrown.
-fn punch(host: &mut dyn Host, dimension: &str, eye: [f64; 3], dir: [f64; 3], k: f64) {
+fn punch(host: &mut Host<'_>, dimension: &str, eye: [f64; 3], dir: [f64; 3], k: f64) {
     let mut columns = HashMap::new();
     let mut debris = Vec::new();
     let length = (16.0 * k) as i32;
@@ -671,7 +672,7 @@ fn punch(host: &mut dyn Host, dimension: &str, eye: [f64; 3], dir: [f64; 3], k: 
 }
 
 /// Laser Eyes: the beams melt what they touch and set mobs alight; stronger beams cut wider.
-fn laser(host: &mut dyn Host, dimension: &str, at: [f64; 3], level: u8) {
+fn laser(host: &mut Host<'_>, dimension: &str, at: [f64; 3], level: u8) {
     let power = f64::from(level);
     let mut columns = HashMap::new();
     carve_sphere(&mut columns, at, 0.45 + power * 0.32);
@@ -700,7 +701,7 @@ fn thunder(dimension: &str, at: [f64; 3], seed: u8, wrath: bool) {
 
 /// Frost Nova: water freezes, lava turns to obsidian and snow settles in a circle of 14
 /// blocks; the mobs in it are frozen, slowed and hurt.
-fn frost(host: &mut dyn Host, dimension: &str, feet: [f64; 3], radius: i32) {
+fn frost(host: &mut Host<'_>, dimension: &str, feet: [f64; 3], radius: i32) {
     let mut runs = Vec::new();
     let (cx, cz) = (feet[0].floor() as i32, feet[2].floor() as i32);
     for dx in -radius..=radius {
@@ -709,7 +710,7 @@ fn frost(host: &mut dyn Host, dimension: &str, feet: [f64; 3], radius: i32) {
                 continue;
             }
             let (x, z) = (cx + dx, cz + dz);
-            let surface = Some(horizon_client::mod_api::NativeHeightmap::MotionBlocking);
+            let surface = Some(crate::host::NativeHeightmap::MotionBlocking);
             // The top block (y -1 from the surface height): water to ice, lava to obsidian.
             runs.push(NativeBlockRun { x, z, y: -1, height: 1, surface, block: 1, only: Some(1) });
             runs.push(NativeBlockRun { x, z, y: -1, height: 1, surface, block: 2, only: Some(2) });
@@ -725,7 +726,7 @@ fn frost(host: &mut dyn Host, dimension: &str, feet: [f64; 3], radius: i32) {
             let (x, z) = (cx + (a.cos() * d) as i32, cz + (a.sin() * d) as i32);
             let tall = 5 + (with(rand) * 16.0) as u32;
             let block = if with(rand) < 0.3 { 4 } else { 3 };
-            let surface = Some(horizon_client::mod_api::NativeHeightmap::MotionBlocking);
+            let surface = Some(crate::host::NativeHeightmap::MotionBlocking);
             for (ox, oz, h) in [(0, 0, tall), (1, 0, tall * 2 / 3), (0, 1, tall * 2 / 3), (-1, 0, tall / 2), (0, -1, tall / 2)] {
                 runs.push(NativeBlockRun { x: x + ox, z: z + oz, y: 0, height: h, surface, block, only: Some(0) });
             }
@@ -746,7 +747,7 @@ fn frost(host: &mut dyn Host, dimension: &str, feet: [f64; 3], radius: i32) {
 }
 
 /// Hyper Dash: mobs along the 16 blocks ahead are struck and knocked aside.
-fn dash(host: &mut dyn Host, dimension: &str, from: [f64; 3], dir: [f64; 3]) {
+fn dash(host: &mut Host<'_>, dimension: &str, from: [f64; 3], dir: [f64; 3]) {
     for s in [3.0, 7.0, 11.0, 15.0] {
         let at = add(from, dir, s);
         command(host, dimension, at, "damage @e[type=!minecraft:player,distance=..2.5] 12 minecraft:generic");
@@ -765,7 +766,7 @@ fn dash(host: &mut dyn Host, dimension: &str, from: [f64; 3], dir: [f64; 3]) {
 
 /// Gravity Well, each tick: everything within 24 blocks is pulled in and swirls, and now and
 /// then a loose block is torn out of the ground and thrown in.
-fn pull(host: &mut dyn Host, dimension: &str, at: [f64; 3], singularity: bool, left: u64) {
+fn pull(host: &mut Host<'_>, dimension: &str, at: [f64; 3], singularity: bool, left: u64) {
     let reach = if singularity { 120.0 } else { 24.0 };
     fling(host, dimension, at, reach, |offset, d| {
         if d < 0.8 {
@@ -821,12 +822,12 @@ fn pull(host: &mut dyn Host, dimension: &str, at: [f64; 3], singularity: bool, l
 
 /// Pushes every tracked entity within `radius` of `at` in `dimension` by what `push` says for
 /// its offset from `at` and its distance.
-pub(crate) fn fling(host: &mut dyn Host, dimension: &str, at: [f64; 3], radius: f64, push: impl Fn([f64; 3], f64) -> [f64; 3]) {
+pub(crate) fn fling(host: &mut Host<'_>, dimension: &str, at: [f64; 3], radius: f64, push: impl Fn([f64; 3], f64) -> [f64; 3]) {
     fling_some(host, dimension, at, radius, true, push);
 }
 
 /// [`fling`], leaving falling blocks out unless `blocks`.
-fn fling_some(host: &mut dyn Host, dimension: &str, at: [f64; 3], radius: f64, blocks: bool, push: impl Fn([f64; 3], f64) -> [f64; 3]) {
+fn fling_some(host: &mut Host<'_>, dimension: &str, at: [f64; 3], radius: f64, blocks: bool, push: impl Fn([f64; 3], f64) -> [f64; 3]) {
     let ids: Vec<(u32, String)> = with(|s| {
         s.entities
             .iter()
@@ -872,7 +873,7 @@ pub(crate) fn throwable(block: &str) -> bool {
 }
 
 /// A falling block of `block` thrown from `pos` at `velocity` blocks a tick; it lands and stays.
-pub(crate) fn throw(host: &mut dyn Host, dimension: &str, block: &str, pos: [f64; 3], velocity: [f64; 3]) {
+pub(crate) fn throw(host: &mut Host<'_>, dimension: &str, block: &str, pos: [f64; 3], velocity: [f64; 3]) {
     let v = velocity.map(|v| v.clamp(-3.5, 3.5));
     let line = format!(
         "summon minecraft:falling_block ~ ~ ~ {{BlockState:{{Name:\"{block}\"}},Time:1,DropItem:0b,Motion:[{:.3}d,{:.3}d,{:.3}d]}}",
@@ -882,7 +883,7 @@ pub(crate) fn throw(host: &mut dyn Host, dimension: &str, block: &str, pos: [f64
 }
 
 /// Runs `line` as the console does, at `at` in `dimension`.
-pub(crate) fn command(host: &mut dyn Host, dimension: &str, at: [f64; 3], line: &str) {
+pub(crate) fn command(host: &mut Host<'_>, dimension: &str, at: [f64; 3], line: &str) {
     let full = format!(
         "execute in {dimension} positioned {:.3} {:.3} {:.3} run {line}",
         at[0], at[1], at[2]
@@ -921,7 +922,7 @@ pub(crate) fn carve_sphere(columns: &mut HashMap<(i32, i32), (i32, i32)>, c: [f6
 
 /// Clears the columns of every block a power may break, in one edit, keeping 5 blocks above
 /// the bottom of the world.
-pub(crate) fn carve(host: &mut dyn Host, dimension: &str, columns: &HashMap<(i32, i32), (i32, i32)>) {
+pub(crate) fn carve(host: &mut Host<'_>, dimension: &str, columns: &HashMap<(i32, i32), (i32, i32)>) {
     if columns.is_empty() {
         return;
     }
