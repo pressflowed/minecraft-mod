@@ -3,7 +3,8 @@
 A native mod for [Horizon](https://github.com/horizon-rust/horizon), the Rust rewrite of Minecraft: Java Edition
 26.3. It adds twelve super powers, five of them mega powers, plus elytra-style **Superflight** with barrel rolls and
 loops. On top of that there's the **CATACLYSM**, a crater 40 chunks across, two items (the **Storm Scepter**, which
-calls down 13 disasters, and a **Gravity Gun**), a keybind panel and aurora night skies. Built on Horizon commit `e57b1d3`, the build Orbital Laser pins, so the two run in one game, and for
+calls down 13 disasters, and a **Gravity Gun**), **five fully simulated jets** with cockpits and weapons, a keybind
+panel and aurora night skies. Built on Horizon commit `e57b1d3`, the build Orbital Laser pins, so the two run in one game, and for
 launchers that read native mods as `horizon-mixin.toml` bundles.
 
 ![Every power, drawn by the mod's own shaders](docs/preview-powers.png)
@@ -80,6 +81,50 @@ rod or echo shard works.
 | Left-click again | Flings them where you look. They hurt what they hit and land as blocks. |
 | Right-click while holding | Lets them drop. |
 
+## Jets
+
+![The five jets, the cockpit and its heads-up display, drawn by the mod's own shaders](docs/preview-jets.png)
+
+*Drawn on a software GPU over a stand-in scene. In the game they fly in your world.*
+
+**Tap P** to get in (on the ground the jet stands on its wheels; in the air it is already flying) and again
+to get out. **Hold P** to choose a jet: scroll or A/D, then let go. **F5** switches between the cockpit and the
+chase camera.
+
+| Jet | What it is |
+| --- | --- |
+| **Falcon** | Light fighter: balanced and easy. Cannon, 4 missiles, 2 bombs. |
+| **Specter** | Stealth fighter: faceted, dark, no afterburner flame. Missiles fire from bay doors in its belly. |
+| **Viper** | Delta-wing interceptor: fastest in a straight line, wide turns. 6 missiles. |
+| **Talon** | Thrust-vectoring dogfighter with canards: the tightest turns, and **C** does a Cobra. |
+| **Leviathan** | Flying-wing bomber, 52 blocks across: slow and heavy; middle click opens the bay and drops a stick of 20 bombs. |
+
+**The flight model is a real simulation.** Every wing half, tailplane, fin and canard makes its own lift and
+drag from the air it meets (including the air from the jet's own rotation), with a lift curve that stalls.
+Thrust, gravity, body drag that rises near the speed of sound, thinner air up high, and landing gear on springs
+do the rest. Nothing is scripted: stability, stalls, spins, energy lost in turns, takeoffs and landings all come
+out of the forces.
+
+| Control | Does |
+| --- | --- |
+| Mouse | **Mouse aim** (default): the fly-by-wire points the nose where you look. **Direct** (`;`): the mouse is the stick, the view stays fixed to the cockpit. |
+| W / S | Throttle up / down (it stays where you set it). |
+| Sprint (Ctrl) | Afterburner, at full throttle. |
+| A / D | Roll (mouse aim) or rudder (direct). |
+| Space | Airbrake. |
+| Sneak | Look around without steering (mouse aim). |
+| `'` | Flight assists (stability help and the g and angle-of-attack limiter) on or off. |
+| Left click | Cannon. |
+| Right click | Missile: aim near a mob for a lock (a diamond on the HUD and a tone); locked missiles home in. |
+| Middle click | Bomb (the HUD shows where it will land). |
+
+**The cockpit** has a heads-up display drawn on its glass plate (pitch ladder, flight path marker, speed,
+altitude, heading tape, g, Mach, angle of attack, ammunition, lock, stall and pull-up warnings), three working
+screens (attitude, radar, engines and weapons), and a stick and throttle that move. Afterburners show shock
+diamonds; there's heat shimmer behind the engines, vapour from the wingtips in hard turns, contrails up high,
+and a vapour cone and a sonic boom through the speed of sound. Hitting the ground or a mountain hard is a crash:
+the jet explodes and you're thrown clear, unhurt.
+
 ## Superflight
 
 | Control | Does |
@@ -95,7 +140,8 @@ rod or echo shard works.
 
 You take no fall damage while flying, nor for ten seconds after. The view widens with speed, and speed lines stream
 past when you boost. The camera rolls and loops all the way round: the mod carries one small patch to the game (the
-`[[injection]]` in `horizon-mixin.toml`), because the game otherwise limits a mod's camera turn to 10 degrees.
+`[[injection]]` in `horizon-mixin.toml`), because the game otherwise limits a mod's camera turn to 10 degrees. The
+jets' direct mode uses the same patch to fix the view to the cockpit.
 
 > [!WARNING]
 > **The powers change the world for good.** Use a throwaway world or back yours up. They never break bedrock or the
@@ -116,7 +162,8 @@ past when you boost. The camera rolls and loops all the way round: the mod carri
 ## How it was checked
 
 - The code type-checks against Horizon's own source at commit `e57b1d3`, the build it is made for, and its
-  unit tests pass (the flight physics, the bolt scatter, the cast message, the key layout).
+  27 unit tests pass: among them, every jet holds level flight, rolls and pulls the right way, turns to where you
+  look, takes off from the ground and crashes when it should.
 - The shaders pass wgpu's validator and translate for Vulkan, Metal and DirectX. The storm visuals were drawn on a
   software GPU over a stand-in scene to tune them.
 - It hasn't run inside the game yet. If the build fails, the Mods page and `native/build.log` say why. If something

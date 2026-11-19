@@ -122,6 +122,16 @@ pub fn tick() {
     with(|s| s.tick += 1);
 }
 
+/// The server's tick count.
+pub(crate) fn now() -> u64 {
+    with(|s| s.tick)
+}
+
+/// The entities the level told of in `dimension`: id and kind.
+pub(crate) fn entities_in(dimension: &str) -> Vec<(u32, String)> {
+    with(|s| s.entities.iter().filter(|(_, (d, _))| d == dimension).map(|(id, (_, kind))| (*id, kind.clone())).collect())
+}
+
 pub fn joined(dimension: &str, entity: u32, kind: &str) {
     if kind == "minecraft:player" || kind == "minecraft:lightning_bolt" {
         return;
@@ -268,6 +278,7 @@ pub fn level_tick(host: &mut dyn Host, dimension: &str) {
     mine.retain(|st| !st.done());
     with(|s| s.storms.extend(mine));
     hold(host, dimension);
+    crate::jet_server::level_tick(host, dimension);
 }
 
 pub(crate) fn queue_lightning(dimension: &str, at: [f64; 3], radius: f64) {

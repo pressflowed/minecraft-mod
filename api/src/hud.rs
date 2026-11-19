@@ -20,6 +20,7 @@ pub fn draw(host: &mut dyn Host, batch: &mut HudBatch, corners: &mut Corners) {
     // the screen's width, from where a box of no width goes in the top right corner
     let width = corners.place(Corner::TopRight, 0.0, 0.0).0 + 2.0;
     draw_items(host, batch, corners, width);
+    draw_jets(host, batch, corners, width);
     let (panel, lasers, laser_power, ready, flying, charge) = {
         let c = client::state();
         (c.panel, c.lasers, c.laser_power, c.ready, c.flying, c.charge)
@@ -49,6 +50,80 @@ pub fn draw(host: &mut dyn Host, batch: &mut HudBatch, corners: &mut Corners) {
         host.fill(batch, [x + PAD, y + 3.0, w * full, 5.0], 0xFFFF_4020);
         let text = if full >= 1.0 { "CATACLYSM" } else { "CHARGING CATACLYSM..." };
         host.text(batch, text, [x + PAD, y + 10.0], 0xFF6A3A, true);
+    }
+}
+
+/// The jet's read-out (behind it; in the cockpit the instruments say it all), its keys, and the
+/// jet picker.
+fn draw_jets(host: &mut dyn Host, batch: &mut HudBatch, corners: &mut Corners, width: f32) {
+    use crate::jet;
+    use crate::jet_sim::{self, Mode};
+    let (readout, picker, selected) = jet::readout();
+    let key = |k: (&str, &str, &str)| client::key_label(host, k.0, k.2);
+    if let Some(r) = readout {
+        let mode = if r.mode == Mode::Direct { "DIRECT" } else { "MOUSE AIM" };
+        let assist = if r.assist { "ASSIST" } else { "RAW" };
+        let lines: Vec<(String, u32)> = if r.third {
+            let mut l = vec![
+                (format!("{}  {mode}  {assist}", r.name.to_uppercase()), 0x8AE0FF),
+                (format!("SPD {:>3.0}  ALT {:>4.0}  M {:.2}  G {:>4.1}", r.speed, r.altitude, r.mach, r.g), 0xD8F8D8),
+                (format!("THR {:>3.0}%{}  GEAR {}", r.throttle * 100.0, if r.burner > 0.3 { " AB" } else { "" }, if r.gear > 0.97 { "DOWN" } else if r.gear < 0.03 { "UP" } else { "..." }), 0xD8F8D8),
+                (format!("GUN {}  MSL {}  BMB {}{}", r.rounds, r.missiles, r.bombs, match r.lock { 2 => "  LOCK", 1 => "  locking", _ => "" }), 0xFFD27A),
+            ];
+            if r.stalled {
+                l.push(("STALL".to_owned(), 0xFF5040));
+            }
+            l
+        } else {
+            Vec::new()
+        };
+        let hint = format!("[{}] out  [{}] {}  [{}] assists  W/S throttle  Ctrl burner  Space brake", key(jet::JET_KEY), key(jet::MODE_KEY), if r.mode == Mode::Direct { "mouse aim" } else { "direct" }, key(jet::ASSIST_KEY));
+        let w = lines.iter().map(|(t, _)| width_of(t)).fold(width_of(&hint), f32::max) + PAD * 2.0;
+        let h = LINE * (lines.len() as f32 + 1.0) + 4.0;
+        let (x, y) = corners.place(Corner::BottomLeft, w, h);
+        host.fill(batch, [x, y, w, h], 0x9006_0A10);
+        host.fill(batch, [x, y, w, 1.5], 0xFF8A_E0FF);
+        let mut row = y + 3.0;
+        for (text, color) in &lines {
+            host.text(batch, text, [x + PAD, row], *color, true);
+            row += LINE;
+        }
+        host.text(batch, &hint, [x + PAD, row], 0x9A9A9A, true);
+    }
+    if picker {
+        let w = 250.0;
+        let x = (width - w) / 2.0;
+        let y = 24.0;
+        let h = PAD * 2.0 + LINE * (jet_sim::COUNT as f32 * 2.0 + 2.6);
+        host.fill(batch, [x, y, w, h], 0xC00A_0612);
+        host.fill(batch, [x, y, w, 1.5], 0xFF8A_E0FF);
+        host.text(batch, "JETS", [x + PAD, y + PAD], 0x8AE0FF, true);
+        let help = "scroll or A/D";
+        host.text(batch, help, [x + w - PAD - width_of(help), y + PAD], 0x8A8A8A, true);
+        let mut row = y + PAD + LINE * 1.4;
+        for (i, spec) in jet_sim::specs().iter().enumerate() {
+            let chosen = i == selected;
+            if chosen {
+                host.fill(batch, [x + 2.0, row - 1.5, w - 4.0, LINE * 2.0 + 1.0], 0x6020_4060);
+                host.fill(batch, [x + 2.0, row - 1.5, 2.0, LINE * 2.0 + 1.0], 0xFF8A_E0FF);
+            }
+            let name = format!("{}{}", if chosen { "> " } else { "  " }, spec.name);
+            host.text(batch, &name, [x + PAD + 2.0, row], if chosen { 0xFFFFFF } else { 0xB8D8F0 }, true);
+            // bars: speed, agility, size
+            let top = (spec.afterburner / spec.drag_area.z / 60_000.0).clamp(0.2, 1.0) as f32;
+            let agile = (spec.max_roll / 4.4) as f32;
+            let size = (spec.span / 52.0).sqrt() as f32;
+            for (k, (label, value, color)) in [("SPD", top, 0xFF7AD0FFu32), ("AGL", agile, 0xFF7AFF9A), ("SIZE", size, 0xFFFFC27A)].into_iter().enumerate() {
+                let bx = x + 112.0 + k as f32 * 46.0;
+                host.text(batch, label, [bx, row], 0x8A8A8A, true);
+                host.fill(batch, [bx, row + 8.0, 40.0, 2.0], 0x40FF_FFFF);
+                host.fill(batch, [bx, row + 8.0, 40.0 * value.clamp(0.05, 1.0), 2.0], color);
+            }
+            host.text(batch, spec.about, [x + PAD + 12.0, row + LINE], 0x9A9A9A, true);
+            row += LINE * 2.0;
+        }
+        let release = format!("let go of [{}] to choose", key(jet::JET_KEY));
+        host.text(batch, &release, [x + PAD, row + 2.0], 0x8A8A8A, true);
     }
 }
 
@@ -152,7 +227,7 @@ fn draw_panel(
     ready: &[Option<Instant>; 13],
     flying: bool,
 ) {
-    let rows = POWERS.len() as f32 + 1.2 + 3.2 + if lasers { 1.0 } else { 0.0 } + if flying { 1.0 } else { 0.0 };
+    let rows = POWERS.len() as f32 + 1.2 + 4.6 + if lasers { 1.0 } else { 0.0 } + if flying { 1.0 } else { 0.0 };
     let height = PAD * 2.0 + LINE * (rows + 1.6);
     let (x, y) = corners.place(Corner::TopLeft, WIDTH, height);
     // a dark glass panel with a gold rim along its top
@@ -220,6 +295,10 @@ fn draw_panel(
     host.text(batch, "Storm Scepter: breeze rod", [x + PAD, row], 0xB8B8B8, true);
     row += LINE;
     host.text(batch, "Gravity Gun: echo shard", [x + PAD, row], 0xB8B8B8, true);
+    row += LINE * 1.2;
+    let jet_key = client::key_label(host, crate::jet::JET_KEY.0, crate::jet::JET_KEY.2);
+    host.fill(batch, [x + PAD, row + 2.0, WIDTH - PAD * 2.0, 1.0], 0x608A_E0FF);
+    host.text(batch, &format!("JETS  [{jet_key}] in/out, hold: choose"), [x + PAD, row + 4.0], 0x8AE0FF, true);
 }
 
 /// A darker shade of `rgb`, for the key boxes.

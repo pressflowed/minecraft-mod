@@ -33,7 +33,11 @@ struct Frame {
     c: vec4<f32>,
     // the storms' air: rain, darkness, heat shimmer, a red-orange cast
     d: vec4<f32>,
+    // how many trail points there are
+    e: vec4<f32>,
     effects: array<Effect, 48>,
+    // vapour and smoke trails: camera-relative points, w = kind * 2 + how fresh (below 0 a break)
+    trails: array<vec4<f32>, 96>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -59,6 +63,11 @@ const METEOR: i32 = 15;
 const BOX: i32 = 16;
 const TETHER: i32 = 17;
 const MARKER: i32 = 18;
+const FLAME: i32 = 19;
+const HAZE: i32 = 20;
+const VAPOR: i32 = 21;
+const TRACER: i32 = 22;
+const RETICLE: i32 = 23;
 const FAR: f32 = 1.0e9;
 
 struct VsOut {
@@ -1068,6 +1077,85 @@ fn marker(v: View, e: Effect) -> vec3<f32> {
     return col;
 }
 
+// ---- the jets ---------------------------------------------------------------------------------------
+
+// An engine's flame: a cone of fire behind the nozzle; with the afterburner (c.w) long and blue at
+// its root, with bright shock diamonds down its length.
+fn flame(v: View, e: Effect) -> vec3<f32> {
+    let origin = e.p.xyz;
+    let r = e.p.w;
+    let dir = normalize(e.q.xyz);
+    let len = max(e.q.w, 0.1);
+    let ab = e.c.w;
+    let rs = ray_segment(v.dir, origin, origin + dir * len);
+    if (rs.y > v.dist + r * 2.0) {
+        return vec3<f32>(0.0);
+    }
+    let t = frame.a.x;
+    let width = r * (1.0 - 0.8 * rs.z) + 0.03;
+    let x = rs.x / width;
+    let flick = 0.8 + 0.2 * noise(vec2<f32>(rs.z * 9.0 - t * 45.0, e.k.w + rs.x));
+    let core = exp(-x * x * 2.0);
+    let fade = 1.0 - rs.z;
+    let dry = e.c.rgb * core * fade * 0.9;
+    let diamonds = pow(0.5 + 0.5 * cos(rs.z * len / max(r * 1.7, 0.1) * 6.2831853), 3.0);
+    let root = mix(vec3<f32>(0.55, 0.7, 1.0), vec3<f32>(1.0, 0.5, 0.18), smoothstep(0.05, 0.6, rs.z));
+    let burner = root * core * fade * (0.8 + 2.2 * diamonds * smoothstep(0.03, 0.15, rs.z));
+    let halo = exp(-abs(x) * 0.7) * 0.08 * fade;
+    return (mix(dry, burner * 1.5, ab) + e.c.rgb * halo) * flick;
+}
+
+// A vapour cone round a jet passing the speed of sound.
+fn vapor(v: View, e: Effect) -> vec3<f32> {
+    let c = e.p.xyz;
+    let r = e.p.w;
+    let axis = normalize(e.q.xyz);
+    let rs = ray_segment(v.dir, c + axis * r * 0.4, c - axis * r * 1.4);
+    if (rs.y > v.dist) {
+        return vec3<f32>(0.0);
+    }
+    let cone = r * (0.25 + 0.85 * rs.z);
+    let shell = exp(-pow((rs.x - cone) / (0.3 * cone + 0.2), 2.0));
+    let fill = smoothstep(cone, cone * 0.4, rs.x) * 0.3;
+    let n = 0.7 + 0.3 * noise(vec2<f32>(rs.z * 12.0, frame.a.x * 20.0));
+    return vec3<f32>(1.0) * (shell + fill) * (1.0 - rs.z) * e.q.w * 0.35 * n;
+}
+
+// A cannon round's tracer: a short bright streak.
+fn tracer(v: View, e: Effect) -> vec3<f32> {
+    let head = e.p.xyz;
+    let dir = normalize(e.q.xyz);
+    let rs = ray_segment(v.dir, head - dir * e.q.w, head);
+    if (rs.y > v.dist + 0.5) {
+        return vec3<f32>(0.0);
+    }
+    let near = max(rs.y, 0.1);
+    let x = rs.x / max(0.05, near * 0.0016);
+    return e.c.rgb * exp(-x * x) * (0.4 + 1.8 * rs.z * rs.z) * 1.8;
+}
+
+// The chase camera's markers: a ring where the nose points, a diamond on a lock.
+fn reticle(v: View, e: Effect) -> vec3<f32> {
+    let pd = normalize(e.p.xyz);
+    let facing = dot(v.dir, pd);
+    if (facing < 0.5) {
+        return vec3<f32>(0.0);
+    }
+    let right = normalize(cross(pd, vec3<f32>(0.0, 1.0, 0.0)) + vec3<f32>(1.0e-5, 0.0, 0.0));
+    let upv = cross(right, pd);
+    let local = vec2<f32>(dot(v.dir, right), dot(v.dir, upv)) / facing;
+    let size = e.p.w;
+    let w = 0.0012;
+    var d = 0.0;
+    if (e.q.w > 0.5) {
+        d = abs(abs(local.x) + abs(local.y) - size);
+    } else {
+        d = min(abs(length(local) - size), length(local) * 3.0);
+    }
+    let blink = select(1.0, step(0.5, fract(frame.a.x * 6.0)), e.c.w < 0.9 && e.q.w > 0.5);
+    return e.c.rgb * exp(-pow(d / w, 2.0)) * 1.4 * blink;
+}
+
 // Rain: streaks falling down the screen in three layers.
 fn rain_streaks(ndc: vec2<f32>, t: f32) -> f32 {
     var s = 0.0;
@@ -1128,6 +1216,14 @@ fn fs_glow(in: VsOut) -> @location(0) vec4<f32> {
             col = col + tether(v, e);
         } else if (kind == MARKER) {
             col = col + marker(v, e);
+        } else if (kind == FLAME) {
+            col = col + flame(v, e);
+        } else if (kind == VAPOR) {
+            col = col + vapor(v, e);
+        } else if (kind == TRACER) {
+            col = col + tracer(v, e);
+        } else if (kind == RETICLE) {
+            col = col + reticle(v, e);
         }
     }
     // speed lines streaming past the view's edges
@@ -1191,6 +1287,16 @@ fn fs_lens(in: VsOut) -> @location(0) vec4<f32> {
                 let away = v.uv - c;
                 ripple = ripple + normalize(away + vec2<f32>(1.0e-5, 0.0)) * exp(-x * x) * pow(1.0 - t, 2.0) * 0.012;
             }
+        } else if (kind == HAZE) {
+            // the air shimmers in a jet's exhaust
+            let dir_e = normalize(e.q.xyz);
+            let rs = ray_segment(v.dir, e.p.xyz, e.p.xyz + dir_e * e.q.w);
+            let width = e.p.w * (1.0 + 2.0 * rs.z);
+            if (rs.y < v.dist && rs.x < width) {
+                let k = (1.0 - rs.x / width) * (1.0 - rs.z) * e.c.w;
+                let wob = vec2<f32>(noise(vec2<f32>(rs.z * 20.0 - frame.a.x * 30.0, rs.x * 9.0)), noise(vec2<f32>(rs.x * 11.0, rs.z * 17.0 - frame.a.x * 26.0))) - 0.5;
+                ripple = ripple + wob * k * 0.012;
+            }
         } else if (kind == FROST) {
             frost_tint = max(frost_tint, frame.c.z);
             if (v.has_surface) {
@@ -1251,6 +1357,39 @@ fn fs_lens(in: VsOut) -> @location(0) vec4<f32> {
             vol = smoke(v, e, jitter);
         }
         col = col * (1.0 - vol.a) + vol.rgb;
+    }
+    // vapour and smoke trails
+    let trail_count = i32(frame.e.x);
+    for (var i = 0; i < 95; i = i + 1) {
+        if (i + 1 >= trail_count) {
+            break;
+        }
+        let a = frame.trails[i];
+        let b = frame.trails[i + 1];
+        if (a.w < 0.0 || b.w < 0.0) {
+            continue;
+        }
+        let kind_t = floor(a.w * 0.5);
+        let fresh = a.w - kind_t * 2.0;
+        let rs = ray_segment(v.dir, a.xyz, b.xyz);
+        if (rs.y > v.dist || rs.y <= 0.0) {
+            continue;
+        }
+        var width = 0.22;
+        var strength = 0.45;
+        var tint = vec3<f32>(1.0);
+        if (kind_t > 1.5) {
+            width = 0.6;
+            strength = 0.7;
+            tint = vec3<f32>(0.62, 0.6, 0.58);
+        } else if (kind_t > 0.5) {
+            width = 0.9;
+            strength = 0.55;
+        }
+        width = width * (1.0 + (1.0 - fresh) * 3.0);
+        let x = rs.x / width;
+        let alpha = exp(-x * x) * fresh * strength;
+        col = mix(col, tint * daylight(), clamp(alpha, 0.0, 0.85));
     }
     let rain = frame.d.x;
     if (rain > 0.0) {

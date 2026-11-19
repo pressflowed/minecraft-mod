@@ -232,7 +232,7 @@ pub fn fall_protected() -> bool {
         .is_some_and(|until| Instant::now() < until)
 }
 
-fn protect_falls(seconds: f32) {
+pub(crate) fn protect_falls(seconds: f32) {
     let until = Instant::now() + Duration::from_secs_f32(seconds);
     let mut safe = SAFE_UNTIL.lock().unwrap_or_else(|p| p.into_inner());
     if safe.is_none_or(|s| s < until) {
@@ -245,14 +245,14 @@ pub fn mod_row() -> NativeMod {
         .iter()
         .map(|p| [p.key.to_owned(), p.label.to_owned(), p.default.to_owned()])
         .collect();
-    for (key, label, default) in [PANEL, LOOP] {
+    for (key, label, default) in [PANEL, LOOP].into_iter().chain(crate::jet::KEYS) {
         keys.push([key.to_owned(), label.to_owned(), default.to_owned()]);
     }
     NativeMod {
         id: ID.to_owned(),
         title: format!("{NAME} {VERSION}"),
         description: "Twelve super powers with big visuals, Superflight with barrel rolls and loops, \
-                      a 40-chunk Cataclysm, and two items: /superpowers give. Press H for the keys."
+                      a 40-chunk Cataclysm, five simulated jets (P), and two items (/superpowers give). Press H."
             .to_owned(),
         keys,
     }
@@ -357,11 +357,13 @@ pub fn tick(host: &mut dyn Host, camera: NativeCamera) {
     charge_tick(host, &camera);
     flight_tick(host, &camera);
     crate::items::tick(host, &camera);
+    crate::jet::tick(host, &camera);
 }
 
 /// Each frame: where the beams hit.
 pub fn frame(host: &mut dyn Host) {
     crate::items::frame(host);
+    crate::jet::frame(host);
     let (lasers, omega) = {
         let c = state();
         (c.lasers, c.omega_until.is_some())
@@ -386,8 +388,9 @@ pub fn frame(host: &mut dyn Host) {
 }
 
 pub fn key(host: &mut dyn Host, key: &str, pressed: bool) {
-    // a held Storm Scepter or Gravity Gun takes its keys first (R opens the scepter's picker)
-    if crate::items::key(host, key, pressed) {
+    // a jet takes its keys first, then a held Storm Scepter or Gravity Gun (R opens the
+    // scepter's picker)
+    if crate::jet::key(host, key, pressed) || crate::items::key(host, key, pressed) {
         return;
     }
     // The Cataclysm charges while its key is held.
@@ -809,6 +812,9 @@ fn flight_tick(host: &mut dyn Host, camera: &NativeCamera) {
 
 /// The movement keys while flying steer the flight, not the feet.
 pub fn movement(forward: &mut f32, strafe: &mut f32, jump: &mut bool, sneak: &mut bool, sprinting: bool) {
+    if crate::jet::movement(forward, strafe, jump, sneak, sprinting) {
+        return;
+    }
     let mut c = state();
     if c.items.picker {
         // A and D choose an event while the Storm Scepter's picker is open
@@ -852,6 +858,9 @@ pub fn shake(shake: &mut NativeShake) {
         };
     }
     amount += crate::items::shake(&c, c.eye);
+    drop(c);
+    crate::jet::shake(shake);
+    let c = state();
     if c.lasers && c.beam.is_some_and(|b| b.hit) {
         amount += 0.05 * f32::from(c.laser_power);
     }
@@ -881,6 +890,7 @@ pub fn shake(shake: &mut NativeShake) {
 
 /// The field of view: a dash and flying fast widen it.
 pub fn fov(degrees: f32) -> f32 {
+    let degrees = crate::jet::fov(degrees);
     let c = state();
     let mut out = degrees;
     if let Some(dash) = c.dash {
@@ -905,6 +915,7 @@ mod tests {
         let mut keys: Vec<&str> = POWERS.iter().map(|p| p.default).collect();
         keys.push(PANEL.2);
         keys.push(LOOP.2);
+        keys.extend(crate::jet::KEYS.iter().map(|k| k.2));
         let count = keys.len();
         keys.sort();
         keys.dedup();

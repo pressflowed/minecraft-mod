@@ -13,7 +13,8 @@ fn unbounded_shake_matrix(game: &crate::game::Game<'_>, partial: f32) -> glam::M
     } else {
         scale = 1.0;
     }
-    // Pitch and roll turn freely: Superflight's loops and rolls. Yaw and offset keep the bound.
+    // Pitch, roll and yaw turn freely: Superflight's loops and rolls, and a jet's cockpit view,
+    // which turns the camera onto the jet's own axes. The offset keeps its bound.
     let mut free = NativeShake::default();
     if shake.pitch.is_finite() {
         free.pitch = shake.pitch.rem_euclid(360.0);
@@ -22,8 +23,9 @@ fn unbounded_shake_matrix(game: &crate::game::Game<'_>, partial: f32) -> glam::M
         free.roll = shake.roll.rem_euclid(360.0);
     }
     if shake.yaw.is_finite() {
-        free.yaw = (shake.yaw * scale).clamp(-SHAKE_MAX_DEGREES, SHAKE_MAX_DEGREES);
+        free.yaw = shake.yaw.rem_euclid(360.0);
     }
+    let _ = SHAKE_MAX_DEGREES;
     for i in 0..3 {
         if shake.offset[i].is_finite() {
             free.offset[i] = (shake.offset[i] * scale).clamp(-SHAKE_MAX_OFFSET, SHAKE_MAX_OFFSET);

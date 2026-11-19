@@ -18,12 +18,16 @@ use std::time::Instant;
 
 /// Effects the shader takes at once.
 pub const MAX_EFFECTS: usize = 48;
-/// The `Frame` uniform: two matrices, four vec4s, then the effects of four vec4s each.
-pub const UNIFORM_SIZE: usize = 64 * 2 + 16 * 4 + MAX_EFFECTS * 64;
+/// Points of vapour and smoke trails the shader takes.
+pub const MAX_TRAIL: usize = 96;
+/// The `Frame` uniform: two matrices, five vec4s, the effects of four vec4s each, then the
+/// trails' points.
+pub const UNIFORM_SIZE: usize = 64 * 2 + 16 * 5 + MAX_EFFECTS * 64 + MAX_TRAIL * 16;
 
 pub struct Renderer {
     started: Instant,
     gpu: Mutex<Option<Gpu>>,
+    jets: Mutex<Option<crate::jet_gpu::JetGpu>>,
 }
 
 struct Gpu {
@@ -39,7 +43,7 @@ struct Gpu {
 
 impl Renderer {
     pub fn new() -> Self {
-        Self { started: Instant::now(), gpu: Mutex::new(None) }
+        Self { started: Instant::now(), gpu: Mutex::new(None), jets: Mutex::new(None) }
     }
 }
 
@@ -363,6 +367,20 @@ pub fn pack(seconds: f32, size: [u32; 2], depth_size: [u32; 2], camera: [f64; 3]
         ]);
     }
     drop(state);
+    // the jets: flames, vapour, tracers and markers, and the trails of vapour and smoke
+    let (jet_effects, trails) = crate::jet::effects(camera);
+    for e in jet_effects {
+        if effects.len() >= MAX_EFFECTS {
+            break;
+        }
+        if e[0][0] as i32 == 20 {
+            lens = true;
+        }
+        effects.push(e);
+    }
+    if !trails.is_empty() {
+        lens = true;
+    }
 
     let mut bytes = Vec::with_capacity(UNIFORM_SIZE);
     let mut put = |values: &[f32]| {
@@ -378,10 +396,17 @@ pub fn pack(seconds: f32, size: [u32; 2], depth_size: [u32; 2], camera: [f64; 3]
     put(&[depth_size[0] as f32, depth_size[1] as f32, wrap(camera[0]), wrap(camera[2])]);
     put(&[effects.len() as f32, flash, frost, speed]);
     put(&air);
+    put(&[trails.len().min(MAX_TRAIL) as f32, 0.0, 0.0, 0.0]);
     for effect in &effects {
         for row in effect {
             put(row);
         }
+    }
+    for _ in effects.len()..MAX_EFFECTS {
+        put(&[0.0; 16]);
+    }
+    for point in trails.iter().take(MAX_TRAIL) {
+        put(point);
     }
     bytes.resize(UNIFORM_SIZE, 0);
     Packed { bytes, lens, glow: night > 0.001 || !effects.is_empty() }
@@ -430,7 +455,8 @@ impl RenderHooks for Renderer {
         let camera = [world.camera.x, world.camera.y, world.camera.z];
         let seconds = (self.started.elapsed().as_secs_f64() % 3600.0) as f32;
         let packed = pack(seconds, world.size, world.depth_size, camera, view_proj, inv);
-        if !packed.glow && !packed.lens {
+        let jets = crate::jet::gpu(view_proj, world.size, world.depth_size, camera, seconds);
+        if !packed.glow && !packed.lens && jets.is_none() {
             return;
         }
         let mut gpu = self.gpu.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -461,8 +487,20 @@ impl RenderHooks for Renderer {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
             ],
         });
-        let passes = [(packed.lens, &gpu.lens), (packed.glow, &gpu.glow)];
-        for (run, pipeline) in passes {
+        // the lens pass, then the jets over it (so storms behind them don't cover them), then light
+        let passes = [(packed.lens, &gpu.lens, false), (packed.glow, &gpu.glow, true)];
+        for (run, pipeline, light) in passes {
+            if light {
+                if let Some((frame, draws)) = &jets {
+                    let mut jet_gpu = self.jets.lock().unwrap_or_else(|p| p.into_inner());
+                    if jet_gpu.as_ref().map(|g| g.format()) != Some(world.color_format) {
+                        *jet_gpu = Some(crate::jet_gpu::JetGpu::new(world.device, world.color_format));
+                    }
+                    if let Some(jg) = jet_gpu.as_mut() {
+                        jg.render(world.device, world.queue, world.encoder, world.color_view, world.depth, world.size, frame, draws);
+                    }
+                }
+            }
             if !run {
                 continue;
             }
@@ -502,6 +540,6 @@ mod tests {
         let identity: [f32; 16] = std::array::from_fn(|i| if i % 5 == 0 { 1.0 } else { 0.0 });
         let packed = pack(1.0, [8, 8], [8, 8], [0.0; 3], identity, identity);
         assert_eq!(packed.bytes.len(), UNIFORM_SIZE);
-        assert_eq!(UNIFORM_SIZE, 3264);
+        assert_eq!(UNIFORM_SIZE, 4816);
     }
 }

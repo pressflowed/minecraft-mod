@@ -11,11 +11,21 @@
 //! - [`hud`]: the panel, the flight read-out and the Cataclysm's charge.
 //! - [`items`] (the window) and [`storms`] (the world): the Storm Scepter's thirteen events and
 //!   the Gravity Gun; [`weather`] holds what both sides work out alike.
+//! - The jets: [`jet_sim`] (the flight model), [`jet_mesh`] (the models and cockpit),
+//!   [`jet_shader`] and [`jet_gpu`] (drawing them), [`jet`] (flying one, in the window) and
+//!   [`jet_server`] (weapons in the world), talking over [`jet_net`].
 
 mod client;
 mod flight;
 mod hud;
 mod items;
+mod jet;
+mod jet_gpu;
+mod jet_mesh;
+mod jet_net;
+mod jet_server;
+mod jet_shader;
+mod jet_sim;
 mod net;
 mod render;
 mod server;
@@ -24,17 +34,21 @@ mod storms;
 mod weather;
 
 use horizon_client::mod_api::{
-    CameraShakeEvent, CommandEvent, CommandsEvent, ComputeFovEvent, EntityJoinLevelEvent,
-    EntityLeaveLevelEvent, Flow, FrameEvent, Hooks, Host, HudEvent, InteractionKeyEvent, KeyEvent,
-    LevelTickPostEvent, LivingFallEvent, ModsEvent, MouseScrollingEvent, MovementInputEvent,
-    NetFromClientEvent, RenderHooks, ScreenClosingEvent, ScreenOpeningEvent, TickEvent,
+    CameraDistanceEvent, CameraShakeEvent, CommandEvent, CommandsEvent, ComputeFovEvent,
+    EntityJoinLevelEvent, EntityLeaveLevelEvent, Flow, FrameEvent, Hooks, Host, HudEvent,
+    InteractionKeyEvent, KeyEvent, LevelTickPostEvent, LivingFallEvent, ModsEvent,
+    MouseScrollingEvent, MovementInputEvent, NetFromClientEvent, NetFromServerEvent,
+    PlayerSubmitEvent, RenderHandEvent, RenderHooks, ScreenClosingEvent, ScreenOpeningEvent,
+    TickEvent,
 };
+/// The GPU API the game draws with (the jets' pass uses it directly).
+pub(crate) use horizon_client::mod_api::wgpu;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The mod's id, as `horizon-mixin.toml` names it: its keys' lines and its message channel.
 pub const ID: &str = "superpowers";
 pub const NAME: &str = "Superpowers";
-pub const VERSION: &str = "0.5.0";
+pub const VERSION: &str = "0.6.0";
 
 /// The sprint key held (the movement hook doesn't tell): Superflight's boost.
 static SPRINT: AtomicBool = AtomicBool::new(false);
@@ -89,7 +103,7 @@ impl Hooks for Superpowers {
     /// While the laser eyes are on, the use key fires them instead of using the held item; the
     /// Storm Scepter and the Gravity Gun take the buttons they use.
     fn interaction_key(&self, host: &mut dyn Host, event: &mut InteractionKeyEvent) -> Flow {
-        if host.on(ID) && (event.button == 1 && client::lasers_on() || items::claims(event.button)) {
+        if host.on(ID) && (event.button == 1 && client::lasers_on() || jet::claims(event.button) || items::claims(event.button)) {
             event.swing_hand = false;
             return Flow::Cancel;
         }
@@ -98,7 +112,7 @@ impl Hooks for Superpowers {
 
     /// The mouse wheel chooses in the Storm Scepter's picker instead of the hotbar slot.
     fn mouse_scrolling(&self, host: &mut dyn Host, event: &mut MouseScrollingEvent) -> Flow {
-        if host.on(ID) && items::scroll(host, event.scroll[1]) {
+        if host.on(ID) && (jet::scroll(host, event.scroll[1]) || items::scroll(host, event.scroll[1])) {
             return Flow::Cancel;
         }
         Flow::Continue
@@ -174,6 +188,37 @@ impl Hooks for Superpowers {
         if host.on(ID) && event.channel == net::CHANNEL {
             server::message(host, event.player, event.data);
         }
+        if host.on(ID) && event.channel == jet_net::CHANNEL {
+            jet_server::message(host, event.player, event.data);
+        }
+    }
+
+    fn net_from_server(&self, host: &mut dyn Host, event: &mut NetFromServerEvent) {
+        if host.on(ID) && event.channel == jet_net::CHANNEL {
+            jet::message(host, event.data);
+        }
+    }
+
+    /// Behind the jet in third person: far enough back to see it whole.
+    fn camera_distance(&self, host: &dyn Host, event: &mut CameraDistanceEvent) {
+        if host.on(ID) {
+            jet::camera_distance(&mut event.distance);
+        }
+    }
+
+    /// In a jet the player sits inside it: their body isn't drawn, nor their hand.
+    fn player_submit(&self, host: &dyn Host, event: &mut PlayerSubmitEvent) -> Flow {
+        if host.on(ID) && event.who.local && jet::hides_player() {
+            return Flow::Cancel;
+        }
+        Flow::Continue
+    }
+
+    fn render_hand(&self, host: &dyn Host, _event: &mut RenderHandEvent) -> Flow {
+        if host.on(ID) && jet::hides_player() {
+            return Flow::Cancel;
+        }
+        Flow::Continue
     }
 
     fn level_tick_post(&self, host: &mut dyn Host, event: &mut LevelTickPostEvent) {

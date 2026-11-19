@@ -1,11 +1,12 @@
 # Superpowers: a native trait mod for Horizon (Minecraft Java 26.3 in Rust).
 # Twelve super powers (six of them mega powers), elytra-style Superflight with barrel rolls and loops,
-# a 40-chunk Cataclysm, the Storm Scepter (13 disasters) and a Gravity Gun, a keybind panel, and aurora skies.
+# a 40-chunk Cataclysm, the Storm Scepter (13 disasters), a Gravity Gun, five fully simulated jets with
+# cockpits and weapons, a keybind panel, and aurora skies.
 # Install it from the launcher's Mods page with "Add from GitHub", or build this folder with
 # `horizon-launcher native-build <this folder> --instance <instance> --trust-native-code`.
 [mod]
 id = "superpowers"
-version = "0.5.0"
+version = "0.6.0"
 
 # The same Horizon commit Orbital Laser pins, so both mods build into one game.
 [compatibility]
@@ -14,10 +15,11 @@ horizon_revision = "e57b1d34bb0dcf6bf081c19fe6d2e7f69b60cdf4"
 [api]
 path = "api"
 
-# Superflight rolls and loops the camera all the way round. The game bounds the camera shake
-# mods add to 10 degrees a side; this replaces the function that builds the shake's pose, keeping
-# that bound for yaw and offset and letting pitch and roll turn freely. (The bounding function
-# itself holds closures, which the injector can't take.)
+# Superflight rolls and loops the camera all the way round, and a jet's cockpit view turns it onto
+# the jet's own axes. The game bounds the camera shake mods add to 10 degrees a side; this replaces
+# the function that builds the shake's pose, keeping that bound for the offset and letting pitch,
+# yaw and roll turn freely. (The bounding function itself holds closures, which the injector can't
+# take.)
 [[injection]]
 id = "unbounded-shake"
 target = "horizon_client::game::native_hooks::Game<'_>::native_shake_matrix"
